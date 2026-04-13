@@ -1,28 +1,12 @@
 # Runtime Contracts
 
-Статус: **v2.0 draft + PROTOTYPE-PENDING sections**. Стабилизируется после запуска `prototype-main.rs` на wlroots компизиторе и обновления §2, §3, §9 по фактическим результатам.
+Статус: **v3.0 stable**. Обновлён по результатам прототипа и skeleton implementation. §2, §3, §9 переписаны — PROTOTYPE-PENDING снят.
 
 Документ для репозитория. Только контракты, по которым работает рантайм.
 
 Roadmap — в [PROJECT.md](./PROJECT.md). Scope 0.1 — в [CHARTER-0.1.md](./CHARTER-0.1.md). Границы Core — в [PLATFORM.md](./PLATFORM.md). Архитектурные gap'ы — в [SELF-AUDIT.md](./SELF-AUDIT.md).
 
 Пересмотр — PR с меткой `contract-change` и approver'ом из `CODEOWNERS`. Нарушение контракта в коде — bug, не «особенность реализации».
-
----
-
-## ⚠️ PROTOTYPE-PENDING sections
-
-Следующие разделы **устарели** относительно SELF-AUDIT.md и `prototype-main.rs`.
-Они **не должны** использоваться как руководство к написанию кода сейчас.
-Будут переписаны после запуска прототипа на реальной машине.
-
-| Раздел | Что устарело | Правильная модель (из прототипа) |
-|---|---|---|
-| §2 (иерархия) | Нет layer-shell lifecycle state machine | create → empty commit → WAIT configure → ack → attach |
-| §3 (FrameSource) | `update` + `produce` pair | Единый `render_frame(is_first)`, вызываемый из callback |
-| §9 (threading) | tokio-first, separate Wayland thread | calloop-first на main thread, no tokio в 0.1 |
-
-Остальные разделы (§1, §4-8, §10-15) — **не затронуты** SELF-AUDIT'ом и остаются руководством к коду.
 
 ---
 
@@ -92,71 +76,48 @@ Daemon
 - При hotplug монитора OutputRuntime пересоздаётся целиком.
 - Daemon никогда не держит прямых ссылок на GpuResources.
 
-> ⚠️ **PROTOTYPE-PENDING — layer-shell lifecycle не описан в контрактах.**
->
-> SELF-AUDIT.md Gap 3: создание OutputRuntime имеет **обязательную protocol-level
-> sequence**, которую текущий документ не кодифицирует. Это bypass критического
-> инварианта Wayland.
->
-> **Правильная последовательность (spec wlr-layer-shell-v1):**
-> 1. `compositor.create_surface()` → `wl_surface`.
-> 2. `layer_shell.create_layer_surface(wl_surface, ...)` → `zwlr_layer_surface_v1`.
-> 3. `set_anchor` / `set_size` / `set_keyboard_interactivity`.
-> 4. **`wl_surface.commit()` — initial commit БЕЗ буфера.**
-> 5. **WAIT** — compositor отправляет `configure(serial, width, height)`.
-> 6. `ack_configure(serial)`.
-> 7. **Теперь** можно создать wgpu surface и attach buffer.
-> 8. Render первый кадр с full damage.
-> 9. `wl_surface.commit()`.
->
-> Попытка attach buffer до configure = protocol error, compositor kill-ит клиент.
->
-> **Что это значит для OutputRuntime:**
-> - Backend **не может** быть создан сразу с OutputRuntime — только после configure.
-> - Renderer тоже создаётся после configure (wgpu surface требует valid size).
-> - OutputRuntime имеет внутренний state machine: `PendingConfigure → Configured → Live`.
->
-> **Когда переписывается:**
-> Это видно в `prototype-main.rs` (флаг `configured`, вся логика init в
-> `LayerShellHandler::configure`). После запуска прототипа — переносим эту
-> model в §2 как явный lifecycle state machine + добавляем contract-test
-> `layer_surface_lifecycle` (это будет 6-й тест, не 5-й как сейчас в SKELETON).
+### Layer-shell lifecycle state machine
+
+OutputRuntime проходит через обязательную protocol-level последовательность (wlr-layer-shell-v1 spec). Нарушение порядка = protocol error, compositor kill-ит клиент.
+
+```
+PendingConfigure → Configured → Live
+```
+
+**Правильная последовательность:**
+1. `compositor.create_surface()` → `wl_surface`.
+2. `layer_shell.create_layer_surface(wl_surface, ...)` → `zwlr_layer_surface_v1`.
+3. `set_anchor` / `set_size` / `set_keyboard_interactivity`.
+4. **`wl_surface.commit()` — initial commit БЕЗ буфера.**
+5. **WAIT** — compositor отправляет `configure(serial, width, height)`.
+6. `ack_configure(serial)`.
+7. **Теперь** можно создать wgpu surface и attach buffer.
+8. Render первый кадр с full damage.
+9. `wl_surface.commit()`.
+
+**Следствия для OutputRuntime:**
+- Backend **не может** быть создан сразу с OutputRuntime — только после configure.
+- Renderer тоже создаётся после configure (wgpu surface требует valid size).
+- OutputRuntime имеет внутренний state machine: `PendingConfigure → Configured → Live`.
+
+Подтверждено прототипом: `prototype/src/main.rs` — флаг `configured`, init wgpu в `LayerShellHandler::configure`.
 
 ---
 
 ## 3. Контракт `FrameSource`
 
-> ⚠️ **PROTOTYPE-PENDING — trait shape не проверен кодом.**
->
-> SELF-AUDIT.md Gap 2 зафиксировал: этот trait имеет разделение `update` + `produce`
-> как pair вызовов от Renderer к Backend. Но **Wayland не работает по этой модели**.
->
-> Wayland render cycle driven **compositor'ом через `wl_callback::done`**:
-> 1. Client вызывает `wl_surface::frame(callback)` → commit.
-> 2. Compositor решает когда готов принять следующий кадр → отправляет `done(time)`.
-> 3. Client рисует → attach buffer → damage → commit → запрашивает следующий callback.
->
-> **Что это значит для FrameSource:**
-> - Один entry point `render_frame(now)`, не два (`update` + `produce`).
-> - Вызывается **из callback handler'а** (см. §9 calloop-first model).
-> - `is_first_frame` флаг для damage tracking (см. Gap 4).
->
-> **Что видно из `prototype-main.rs`:**
-> - Handler `CompositorHandler::frame()` — hook для callback done.
-> - Функция `render_frame(layer, is_first)` — единственная render entry point.
-> - Для image backend (статика) callback не запрашивается на каждый кадр —
->   только после изменения (смена wallpaper). Для video/shader — на каждый.
->
-> **Когда переписывается:**
-> После запуска прототипа. Результат — единый метод `render_frame` вместо
-> `update`+`produce`, с явным контрактом про damage и frame-callback driven
-> invocation. Contract-tests также пересматриваются (вместо CT `update-produce
-> pairing` будет CT `damage_on_first_frame` и `callback_requested_on_animated`).
->
-> **Текущий текст ниже описывает trait который **не** будет implemented as-is.
-> Оставлен для диффа.**
+Единственный контракт между Renderer и Backend.
 
-Единственный контракт между Renderer и Backend (устаревший draft).
+Обновлён по результатам прототипа: `update` + `produce` pair заменён на единый
+`render_frame`. Это соответствует Wayland frame-callback-driven модели:
+
+1. Compositor → `wl_callback::done` (готов принять следующий кадр).
+2. OutputRuntime → `FrameSource::render_frame(req)`.
+3. Backend возвращает `FrameOutput` (CPU buffer, Unchanged, etc.).
+4. Renderer present + damage + commit.
+5. OutputRuntime запрашивает следующий callback (для анимированного контента).
+
+Для статики (image) callback не запрашивается повторно — `Unchanged` после первого кадра.
 
 ```rust
 pub trait FrameSource: Send {
@@ -167,12 +128,7 @@ pub trait FrameSource: Send {
     fn resize(&mut self, size: SurfaceSize, scale: FractionalScale)
         -> Result<(), BackendError>;
 
-    // ⚠️ update + produce pair — PROTOTYPE-PENDING переработка в единый render_frame.
-    fn update(&mut self, dt: FrameDelta, rt: &RuntimeState)
-        -> Result<UpdateOutcome, BackendError>;
-
-    fn produce(&mut self, req: &FrameRequest)
-        -> Result<FrameOutput, BackendError>;
+    fn render_frame(&mut self, req: &FrameRequest) -> Result<FrameOutput, BackendError>;
 
     fn pause(&mut self);
     fn resume(&mut self);
@@ -185,12 +141,12 @@ pub trait FrameSource: Send {
 
 - `capabilities` — чистая, можно вызвать в любой момент.
 - `prepare` — ровно один раз, до любого другого метода (кроме `capabilities`).
-- `resize` — не во время `produce`. Только между кадрами.
-- `update` предшествует `produce` в одном кадре. Парные.
-- `pause`/`resume` идемпотентны.
+- `resize` — не во время `render_frame`. Только между кадрами.
+- `render_frame` — единый entry point для получения кадра. Возвращает `Unchanged` для статики после первого кадра.
+- `pause`/`resume` идемпотентны. Двойной pause — noop.
 - `status` без side effects.
 
-Нарушение — bug, ловится `contract-tests`.
+Нарушение — bug, ловится `contract-tests` (см. `wpe-contract-tests/src/tests/`).
 
 ### Capabilities
 
@@ -421,42 +377,17 @@ pub enum PresentError {
 
 ## 9. Потокобезопасность
 
-> ⚠️ **PROTOTYPE-PENDING — текст ниже устарел.**
->
-> Этот раздел описывает threading model, которую я **не проверял на реальной
-> машине**. SELF-AUDIT.md Gap 1 и `prototype-main.rs` показали, что правильная
-> модель — **calloop-first**, не tokio-first.
->
-> **Что мы теперь знаем (из прототипа, pending verification на ПК):**
-> - Main thread = `calloop::EventLoop`.
-> - Wayland events интегрируются через `calloop-wayland-source::WaylandSource`.
-> - wgpu render вызывается **внутри callback'ов** calloop — тот же thread.
-> - Один thread на весь daemon в 0.1.
-> - Tokio **не нужен** для 0.1 (никакого async I/O пока нет).
->
-> **Когда переписывается:**
-> После запуска `prototype-main.rs` на wlroots-компизиторе (Hyprland / Sway /
-> labwc / river / niri). Команда: `cargo run --release`. Измеряется CPU в idle,
-> memory footprint, startup time. По факту обновляется §9 с реальными числами
-> и фактической архитектурой.
->
-> **Если прототип покажет, что calloop-first не справляется** (например,
-> heavy image decode блокирует main thread больше чем на frame budget):
-> добавляется secondary thread с tokio или просто std::thread::spawn для
-> конкретной задачи (decode), с mpsc обратно в calloop. Но это реактивное
-> добавление, не «tokio с первого дня».
->
-> **Старый текст ниже оставлен для диффа, но не является руководством:**
+**Calloop-first. Один thread. Никакого tokio в 0.1.**
 
-~~- `Daemon` — main thread, tokio runtime.~~
-~~- `WaylandConnection` — отдельный thread с `calloop`.~~
-~~- `Backend::prepare` — tokio blocking pool (может быть долгим).~~
-~~- `Backend::update`/`produce`, `Renderer::*` — **только** в render-thread своего OutputRuntime.~~
-~~- Один render-thread = один OutputRuntime.~~
-~~- IPC server — tokio. Команды → OutputRuntime через `tokio::sync::mpsc`.~~
-~~- `SharedAsset` — только `Arc<T>` с immutable данными.~~
+Подтверждено прототипом и реализовано в skeleton.
 
-Проверки (эти остаются актуальными независимо от threading model):
+- **Main thread** = `calloop::EventLoop`.
+- **Wayland events** интегрируются через `calloop-wayland-source::WaylandSource` как calloop event source.
+- **wgpu render** вызывается **внутри callback'ов** calloop — тот же thread, что и Wayland events.
+- **Один thread** на весь daemon в 0.1. Никаких render-thread'ов, никаких thread pool'ов.
+- **Tokio не используется.** Нет async I/O в 0.1. IPC server (Unix socket) может быть non-blocking на calloop. Если в будущем понадобится async (тяжёлый decode, сетевые запросы) — `std::thread::spawn` для конкретной задачи с mpsc обратно в calloop. Это реактивное добавление, не «tokio с первого дня».
+
+Проверки:
 - `#[forbid(unsafe_code)]` везде кроме явных FFI (`wpe-backend-video/ffmpeg_ffi` в 0.2 если будет).
 - `#[deny(clippy::await_holding_lock)]` — применимо только если async появится.
 - `panic!` запрещён в production коде.
@@ -593,7 +524,11 @@ Production lint set:
 
 ## 15. Changelog
 
-- **v2.0 draft (current)** — переписано после pivot на platform подход и Product Charter 0.1. Отличия от v1.0:
+- **v3.0 stable (current)** — PROTOTYPE-PENDING снят. §2, §3, §9 переписаны по результатам прототипа и skeleton:
+  - §2: layer-shell lifecycle state machine добавлен (PendingConfigure → Configured → Live).
+  - §3: `FrameSource` trait обновлён — `update`+`produce` → единый `render_frame(req)`.
+  - §9: calloop-first threading model зафиксирована. Tokio удалён.
+- **v2.0 draft** — переписано после pivot на platform подход и Product Charter 0.1. Отличия от v1.0:
   - Убран `DeviceKind` — только один render stack (wgpu).
   - Убран `FrameSourceKind::DmaBuf` из 0.1 (возвращается в 0.2 с HW accel).
   - Убран раздел про `wpe-backend-scene` (анти-мини-движок) — сцен в Фазе I нет.

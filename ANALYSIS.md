@@ -1,221 +1,193 @@
-# Анализ проекта wpe-rs
+# Полный анализ проекта wpe-rs (deep dive)
 
-Дата анализа: 2026-04-13
-
----
-
-## 1. Общее описание
-
-**wpe-rs** — проектируемый wallpaper daemon для wlroots-based Wayland-композиторов (Hyprland, Sway, labwc, river, niri, Wayfire), написанный на Rust. Цель — заменить пользователю разрозненный стек (`swaybg` + `mpvpaper` + скрипты) единым daemon с профилями, IPC, диагностикой и стабильными контрактами.
-
-**Текущий статус:** фаза документирования и прототипирования. Код — один throwaway prototype (~390 строк), документация — ~4200 строк (~250 KB) в 12 markdown-файлах.
+Дата: 2026-04-13
 
 ---
 
-## 2. Структура репозитория
+## 1) TL;DR
 
-| Файл | Строк | Назначение |
-|---|---|---|
-| `CHARTER-0.1.md` | 267 | Жёсткая рамка релиза 0.1 — высший документ |
-| `PROJECT.md` | 281 | Двухфазная модель, архитектурные решения D1-D10, roadmap до 1.0 |
-| `PLATFORM.md` | 360 | Три слоя: Platform Core / Backend API / Extensions, правила B1-B5 |
-| `RUNTIME.md` | 603 | Контракты рантайма (частично устарели, PROTOTYPE-PENDING) |
-| `SKELETON.md` | 644 | Plan первого компилируемого скелета, 4 crate'а, 5 contract-tests |
-| `SELF-AUDIT.md` | 269 | Honest audit — 8 gap'ов, 2 критичных |
-| `AUDIT-pre-skeleton.md` | 219 | 5 implementation-time находок |
-| `RECON.md` | 266 | Snapshot экосистемы wallpaper tools (April 2026) |
-| `DIFF-v2.{1,2,3}.md` | 1092 | Архив итераций документов |
-| `README.md` | 109 | Навигация по проекту |
-| `main.rs` | 391 | Throwaway prototype — calloop + layer-shell + wgpu |
-| `Cargo.toml` | 51 | Manifest прототипа (6 зависимостей) |
+Проект уже вышел из состояния «только документы»: в репозитории есть **рабочий skeleton workspace** из 4 crate'ов с формализованными контрактами, инвариантами кадра и recovery-поведением, а также набором contract-тестов (16 тестов, все проходят). Главный технический плюс — строгая граница между backend-логикой и renderer/GPU. Главный риск — на текущем этапе почти всё держится на mock/test-реализациях, а интеграция с реальным Wayland/wgpu runtime остаётся следующим крупным шагом.
 
 ---
 
-## 3. Архитектурные решения
+## 2) Что реально находится в репозитории
 
-Проект принял 10 ключевых решений (D1-D10):
+### 2.1 Workspace и границы
 
-| ID | Решение | Комментарий |
-|---|---|---|
-| D1 | Язык — Rust | `unsafe` только в FFI с safety comments |
-| D2 | Один render backend (wgpu) | Никакого GL-stack в Phase I |
-| D3 | Graphics API скрыт за `wpe-render-core` | `wgpu::*` запрещён в backend'ах, lint в CI |
-| D4 | Корпус обоев перед кодом | corpus-A (native) для регрессий |
-| D5 | Stop-критерии, не сроки | Functional + Quality + Performance gate |
-| D6 | Web — out of scope permanent | WebKit/Chromium никогда |
-| D7 | wlroots-only, без premature abstractions | Никаких абстракций «на случай GNOME/KDE» |
-| D8 | Не fork wlrs, не конкурировать | Разные scope, мирное сосуществование |
-| D9 | Adapter layer = только Phase II | Даже под давлением пользователей |
-| D10 | MIT/Apache-2.0 лицензия | GPL не допускается |
+В корне определён Cargo workspace из 4 пакетов:
 
----
+- `wpe-compat`
+- `wpe-backend`
+- `wpe-render-core`
+- `wpe-contract-tests`
 
-## 4. Двухфазная модель
+Prototype исключён из workspace как отдельный throwaway-проект с внешними системными зависимостями.
 
-### Phase I (0.1 → 1.0) — Native Wayland Wallpaper Engine
-- **0.1**: Image-first core (PNG/JPG/WebP) + video как stretch goal с date-gate (2026-06-01)
-- **0.2**: Shader backend (GLSL), HW video (VA-API), smart pause, battery FPS cap
-- **0.3**: Palette extraction + theme hooks
-- **0.4**: Layered composition, WGSL shaders, transitions
-- **0.5**: Lua scripting (mlua)
-- **0.6**: Audio-reactive (PipeWire + FFT)
-- **0.7-0.9**: Stabilization
-- **1.0**: IPC freeze, backend API freeze
+### 2.2 Объём кода/документации
 
-### Phase II (1.x → 2.0) — Platform with Adapter Layer
-- Adapter SDK (pubличный API)
-- Adapter к `linux-wallpaperengine`
-- Time gate: 12 месяцев минимум между фазами
+На момент анализа:
+
+- Markdown: **13 файлов / 4286 строк**
+- Rust: **26 файлов / 1741 строка**
+
+Вывод: документация всё ещё объёмнее кода, но разрыв уже не драматический (раньше был почти «доки без кода»).
 
 ---
 
-## 5. Состояние кода
+## 3) Архитектурная модель в коде (не только в документах)
 
-### Prototype (`main.rs`, 391 строка)
-Throwaway prototype проверяет 4 архитектурных Gap'а:
+### 3.1 Backend contract (`wpe-backend`)
 
-- **Gap 1** (calloop vs tokio): Выбран calloop-first, single-thread, no tokio — подтверждён прототипом
-- **Gap 2** (frame callback): Единый `render_frame(is_first)` вместо `update`+`produce` pair
-- **Gap 3** (layer-shell lifecycle): create → empty commit → wait configure → ack → attach buffer
-- **Gap 4** (damage tracking): full damage на первый кадр, пустой для статики
+Ключевой trait — `FrameSource` с жизненным циклом:
 
-Технологический стек прототипа:
-- `wayland-client` 0.31 + `smithay-client-toolkit` 0.19
-- `calloop` 0.14 + `calloop-wayland-source` 0.4
-- `wgpu` 29 + `pollster` 0.4
-- MSRV: Rust 1.87
+1. `capabilities()`
+2. `prepare(...)`
+3. `resize(...)` при изменении поверхности
+4. `render_frame(...)` как единая точка выдачи кадра
+5. `pause()/resume()` (идемпотентные)
+6. `status()`
 
-**Прототип не скомпилирован и не запущен на реальной машине.** Содержит `unsafe` (`mem::transmute` для `Surface<'static>`), который заменится на `Arc<WlSurface>` в production.
+Это верно отражает Wayland frame-callback модель (не старую `update+produce` пару).
 
----
+### 3.2 Типы кадров и инварианты
 
-## 6. Найденные проблемы и gap'ы
+`FrameOutput` задаёт 4 исхода:
 
-### Критичные (severity: HIGH)
+- `Cpu { buffer, damage }`
+- `DeviceEncoded`
+- `Unchanged`
+- `SkippedDegraded(reason)`
 
-| Gap | Проблема | Статус |
-|---|---|---|
-| Gap 1 | Async model: RUNTIME.md описывал tokio-first, реальность — calloop-first | Прототип написан, RUNTIME §9 помечен PROTOTYPE-PENDING |
-| Gap 2 | Frame callback model отсутствовала, `update`+`produce` pair не совместим с Wayland | Прототип показал правильную модель, RUNTIME §3 помечен PROTOTYPE-PENDING |
+Плюс формализованы `DamageRegion` и CPU буфер (RGBA8 premultiplied). Это хороший фундамент для deterministic поведения в рантайме.
 
-### Средние (severity: MEDIUM)
+### 3.3 Renderer contract (`wpe-render-core`)
 
-| Gap | Проблема | Статус |
-|---|---|---|
-| Gap 3 | Layer surface lifecycle contract не описан | Описан в RUNTIME §2 как PROTOTYPE-PENDING |
-| Gap 4 | Double-buffered state и damage tracking не учтены в Renderer contract | Частично закрыт прототипом |
-| Gap 6 | Performance метрики в CHARTER §6 не верифицированы | Ждут запуска прототипа на реальном оборудовании |
+Renderer отделён от backend и описывает recovery-семантику:
 
-### Foundational
+- `SurfaceLost` → локальное восстановление поверхности
+- `DeviceLost` → фатал, пересоздание higher-level runtime
+- `Transient` → skip текущего кадра
 
-| Gap | Проблема | Статус |
-|---|---|---|
-| Gap 5 | ~2300 строк документации при 0 строк production кода | Осознанно, prototype-first подход принят |
+Это снимает типичную «каша из ошибок present path» проблему, характерную для графических приложений.
 
-### Низкие (severity: LOW)
+### 3.4 Compatibility layer (`wpe-compat`)
 
-| Gap | Проблема | Статус |
-|---|---|---|
-| Gap 7 | `deny.toml` не полный (только licenses) | Skeleton-time |
-| Gap 8 | Нет примера wgpu на Wayland в SKELETON | Закрывается прототипом |
+Слой предназначен для:
+
+- матрицы поддержки
+- отчёта о загрузке/деградации
+- стандартизованных warning-кодов
+
+Практический плюс — можно строить `wpe diag` как отдельную ценность ещё до feature-rich backend'ов.
 
 ---
 
-## 7. Scope 0.1 — что входит, что нет
+## 4) Что гарантируют contract-тесты
 
-### Must-have (в 0.1)
-- Image backend (PNG, JPG, WebP) с fit modes (cover, contain, stretch, tile, center)
-- Multi-output через layer-shell
-- Hotplug мониторов
-- Fractional scale (wp-fractional-scale-v1 + wp_viewporter pair)
-- Profile system (minimal: per-output assignment, manual switching)
-- IPC (Unix socket, JSON): SetProfile, GetActiveProfile, ListProfiles, etc.
-- CLI (`wpe` binary): profile set, output list, status, diag
-- Pause on fullscreen (через ext-foreign-toplevel-list-v1)
-- `wpe diag` — structured diagnostics
+В `wpe-contract-tests` реализованы сценарии, которые реально защищают от классов багов:
 
-### Stretch (с date-gate 2026-06-01)
-- Video backend (CPU path через ffmpeg, H.264/H.265/VP9/AV1)
+1. **lifecycle_order**: запрет `render_frame` до `prepare`, корректный порядок вызовов
+2. **pause_idempotent**: double pause/resume — noop
+3. **present_recovery**: различение recoverable/fatal/transient путей
+4. **no_gpu_in_backend**: backend остаётся GPU-agnostic
+5. **frame_output_invariants**: первый кадр, full damage, статическая неизменность
 
-### Явно НЕ в 0.1
-- Shader backend → 0.2
-- GUI → вне Phase I
-- Pause-on-idle → 0.2
-- Palette/theming → 0.3
-- Layered composition → 0.4
-- Lua scripting → 0.5
-- WE compat → Phase II (2.0)
-- Web wallpapers → никогда в Core
+Факт проверки: `cargo test --workspace` дал **16/16 passed**.
 
 ---
 
-## 8. Планируемая architecture (skeleton)
+## 5) Проверки качества и guardrails
 
-```
-wpe-rs/
-├── crates/
-│   ├── wpe-compat/           # SupportMatrix, LoadReport, warnings
-│   ├── wpe-backend/          # trait FrameSource + типы
-│   ├── wpe-render-core/      # trait Renderer + handles
-│   └── wpe-contract-tests/   # mock'и + 5 contract-tests
-├── deny.toml
-├── clippy.toml
-├── tools/forbidden-imports.sh
-└── .github/workflows/ci.yml
-```
+### 5.1 Линт/стиль
 
-Post-skeleton milestones:
-1. `wpe diag` — первый real milestone (до image backend)
-2. IPC skeleton + config store
-3. `wpe-wayland` + `wpe-render-wgpu` init (clear color)
-4. `wpe-backend-image` — первый реальный wallpaper
-5. Multi-output, hotplug, fractional-scale
-6. `wpe-backend-video` (stretch, до 2026-06-01)
-7. Release 0.1
+- `cargo clippy --workspace --all-targets -- -D warnings` проходит без предупреждений.
+- Низкий риск накопления «технического шума» на раннем этапе.
 
----
+### 5.2 Архитектурная защита от размывания границ
 
-## 9. Качество документации
+Есть скрипт `tools/forbidden-imports.sh`, который блокирует импорт `wgpu` в:
 
-### Сильные стороны
-- **Исключительная дисциплина scope.** Документы чётко разделяют must/stretch/out-of-scope с конкретными номерами релизов
-- **Честный self-audit.** SELF-AUDIT.md признаёт foundational gaps без попытки их скрыть
-- **Anti-scope-creep механизмы.** Date-based cutoff для video (§13), Q1-Q8 запреты в CHARTER, B1-B5 boundary rules в PLATFORM
-- **Иерархия документов.** CHARTER-0.1 > PROJECT > RUNTIME > SKELETON — ясный порядок приоритетов
-- **Actionable diagnostics.** Warning codes с context, impact и fix suggestion
-- **Prototype-first корректировка.** Вместо бесконечных итераций документов — решение прототипировать
+- `wpe-backend`
+- `wpe-render-core`
+- `wpe-compat`
 
-### Слабые стороны
-- **Документы написаны до кода.** 250 KB документации при 0 строк production кода — инвертированный процесс
-- **3 секции RUNTIME.md устарели** и помечены PROTOTYPE-PENDING
-- **SKELETON §10 ссылается на 12 contract-tests**, но §6 описывает только 5 — inconsistency
-- **Performance targets не верифицированы** (CPU <1% для статики, <25% для video) — цифры из головы
-- **Нет запускаемого кода** — прототип не компилировался
-- **Архивные DIFF-v2.x** занимают ~60 KB, но несут только историческую ценность
+Это очень правильная ранняя «рельса», предотвращающая accidental coupling.
 
-### Inconsistencies найденные при анализе
-1. SKELETON §10 говорит "все 12 contract-tests", а §6 описывает 5 тестов
-2. RUNTIME §3 описывает `FrameSource` с `update`+`produce`, но PROTOTYPE-PENDING говорит о едином `render_frame` — trait shape не обновлён
-3. SKELETON §6 CompatWarning содержит `VideoResolutionHuge` (W010), но video может не войти в 0.1
-4. SupportMatrix в RUNTIME §5 содержит `video_codecs` поле, а SKELETON §3 его комментирует как TODO — рассогласование
+### 5.3 Supply-chain baseline
+
+`deny.toml` уже содержит:
+
+- запрет неизвестных registry/git sources
+- deny на vulnerability advisories
+- allow-list лицензий (без GPL)
+
+Это good baseline, но можно усилить раздел `bans` и policy по минимальным версиям.
 
 ---
 
-## 10. Рекомендации
+## 6) Ключевые сильные стороны
 
-### Критический путь (блокирует всё остальное)
-1. **Скомпилировать и запустить прототип** на реальном wlroots-компизиторе
-2. **Обновить RUNTIME §2, §3, §9** по результатам запуска (снять PROTOTYPE-PENDING)
-3. **Измерить реальные метрики** (CPU, memory, startup time) и обновить CHARTER §6
+1. **Контракт-ориентированный дизайн**: сначала формализованы границы, потом реализации.
+2. **Тесты на инварианты, а не только на happy path**.
+3. **Разделение ответственности** между backend/render/compat.
+4. **Явная деградация и диагностика**, а не «молчаливые fallback'и».
+5. **Чистый CI-профиль на текущем skeleton-этапе** (тесты и clippy зелёные).
 
-### Следующие шаги
-4. **Исправить inconsistency** SKELETON §10 (12 tests → 5 tests)
-5. **Начать skeleton** — 4 crate workspace, CI pipeline
-6. **`wpe diag` milestone** — первый запускаемый бинарь
-7. **Собрать corpus-A** (seed: 10 файлов) параллельно с skeleton
+---
 
-### Что НЕ делать
-- Ещё один проход по документам (DIFF v2.4)
-- Переписывать RUNTIME без прототипа
-- Добавлять фичи в scope 0.1
-- Начинать image backend до `wpe diag`
+## 7) Риски и «узкие места»
+
+1. **Интеграционный риск**: контракты и mock-тесты хорошие, но ещё не доказана стабильность на реальном Wayland lifecycle при hotplug/resize/stall.
+2. **Performance risk**: нет зафиксированных бенчмарков «на железе» по CPU/GPU/memory в условиях нескольких выходов.
+3. **Protocol-coverage risk**: scale/viewport/fractional-scale/foreign-toplevel нюансы обычно «ломают» первые релизы.
+4. **Документационно-кодовая синхронизация**: часть исторических документов может расходиться с текущим skeleton-кодом.
+
+---
+
+## 8) Что проверить следующим этапом (практический roadmap)
+
+### P0 (сразу)
+
+1. Поднять минимальный runtime с реальным event loop + surface lifecycle + пустой clear color.
+2. Добавить интеграционные smoke-тесты (не только contract unit tests) с проверкой жизненного цикла окна/поверхности.
+3. Зафиксировать machine-readable telemetry для `wpe diag` (JSON schema).
+
+### P1 (после P0)
+
+4. Ввести perf-baseline:
+   - startup latency
+   - steady-state CPU для статической картинки
+   - memory ceiling
+5. Добавить chaos-сценарии:
+   - SurfaceLost burst
+   - transient present errors
+   - rapid output reconfigure
+
+### P2 (перед feature expansion)
+
+6. Ужесточить `cargo-deny` политику на дубликаты и рискованные источники.
+7. Добавить ABI/contract regression checks (snapshot тесты публичных типов/ошибок).
+
+---
+
+## 9) Интернет-углубление (что удалось и ограничения)
+
+По запросу выполнена попытка углубить анализ через интернет-источники по экосистеме crate'ов/protocols. Ограничение среды: прямой доступ из shell к registry API (`crates.io`) в этой среде блокировался CONNECT 403, поэтому «онлайн-верификация версий через CLI» недоступна.
+
+Через web-инструмент были попытки найти актуальные источники, но выдача оказалась шумной/нерелевантной для точного version-audit. Поэтому для этого отчёта я **не фиксирую непроверяемые онлайн-утверждения как факты**, чтобы не вносить ложную актуальность.
+
+Рекомендация: для полноценного «интернет-глубокого» слоя в следующем проходе запустить скрипт в среде с доступом к:
+
+- crates.io API
+- GitHub Releases (wgpu/smithay/wayland ecosystem)
+- freedesktop/gitlab protocol changelogs
+- rustsec advisory database
+
+И сохранить результаты в отдельный `ECOSYSTEM-RECON.md` с датированными snapshot-таблицами.
+
+---
+
+## 10) Итоговая оценка
+
+Текущее состояние можно охарактеризовать как **«сильный архитектурный skeleton, готовый к интеграционной фазе»**. Проект качественно подготовлен в части контрактов и дисциплины границ. Чтобы перейти к реальной пользовательской ценности, критично быстро сместить центр тяжести с mock-инвариантов на интеграционные runtime-сценарии (Wayland + renderer + diagnostics на реальной машине).
+

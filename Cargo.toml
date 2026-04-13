@@ -1,0 +1,51 @@
+# wpe-prototype/Cargo.toml
+#
+# Throwaway prototype для проверки Gap 1-4 из SELF-AUDIT.md.
+# После измерений — выкинуть, не использовать как базу для skeleton.
+
+[package]
+name = "wpe-prototype"
+version = "0.0.0"
+edition = "2021"
+
+# MSRV из AUDIT F2: wgpu v29 требует 1.87.
+rust-version = "1.87"
+
+[dependencies]
+# Wayland client — base.
+wayland-client = "0.31"
+
+# Smithay Client Toolkit — обёртки над wayland-client с trait-based handlers.
+# Даёт готовую интеграцию layer-shell, output management, compositor.
+smithay-client-toolkit = "0.19"
+
+# Calloop — event loop (single-threaded, callback-based).
+# Gap 1: именно calloop, не tokio. tokio не нужен в прототипе.
+calloop = "0.14"
+calloop-wayland-source = "0.4"
+
+# wgpu — render. Версия 29 — latest stable на April 2026.
+wgpu = "29"
+
+# pollster — микро-рантайм для sync-over-async.
+# wgpu init async, но мы init один раз не в hot path.
+pollster = "0.4"
+
+[profile.release]
+# Для production bench — symbols нужны чтобы читать профилировщик.
+debug = true
+
+# ─────────────────────────────────────────────────────────────────────
+# Что НЕ включено и почему
+# ─────────────────────────────────────────────────────────────────────
+# tokio          — не нужен в прототипе, Gap 1 отвечает calloop-first.
+# serde          — нет IPC в прототипе.
+# clap           — нет CLI.
+# image crate    — нет image backend (только цветной прямоугольник).
+# ffmpeg-next    — нет video.
+# iced           — нет GUI.
+# tracing        — println достаточно для прототипа (AUDIT N2).
+# criterion      — метрики через std::time::Instant (AUDIT N1).
+#
+# Итого: 6 dependencies + их transitive. Compile time на чистой машине
+# ≈ 2-4 минуты. Acceptable для throwaway.

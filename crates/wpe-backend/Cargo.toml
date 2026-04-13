@@ -1,0 +1,10 @@
+[package]
+name = "wpe-backend"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "FrameSource trait and backend types for wpe-rs"
+
+[dependencies]
+wpe-compat = { path = "../wpe-compat" }

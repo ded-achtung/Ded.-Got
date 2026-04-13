@@ -1,0 +1,11 @@
+[package]
+name = "wpe-render-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Renderer trait and GPU handle types for wpe-rs"
+
+[dependencies]
+wpe-compat = { path = "../wpe-compat" }
+wpe-backend = { path = "../wpe-backend" }

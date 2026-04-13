@@ -1,0 +1,12 @@
+[package]
+name = "wpe-contract-tests"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Contract tests for wpe-rs skeleton"
+
+[dependencies]
+wpe-compat = { path = "../wpe-compat" }
+wpe-backend = { path = "../wpe-backend" }
+wpe-render-core = { path = "../wpe-render-core" }

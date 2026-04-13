@@ -1,27 +1,27 @@
 // wpe-prototype/src/main.rs
 //
-// THROWAWAY PROTOTYPE — ~250 строк.
-// Задача: проверить 4 архитектурных Gap'а из SELF-AUDIT.md на реальном Wayland.
-//
-// Что этот код НЕ является:
-// - Это не skeleton 0.1.
-// - Это не wpe-compat.
-// - Это не production архитектура.
-// - Этот код выкидывается после измерений.
+// THROWAWAY PROTOTYPE — проверяет архитектурные Gap'ы на реальном Wayland.
 //
 // Что этот код проверяет:
 // - Gap 1: calloop event loop + wgpu render из callbacks — реально работает?
-// - Gap 2: frame callback loop → render → commit → next callback — правильная модель?
-// - Gap 3: layer-shell initial commit без буфера → configure → ack → attach — правильно?
-// - Gap 4: damage tracking (full damage на первый кадр, empty на unchanged) — экономит CPU?
+// - Gap 2: frame callback loop → render → commit → next callback — ПОЛНЫЙ ЦИКЛ.
+// - Gap 3: layer-shell initial commit без буфера → configure → ack → attach.
+// - Gap 4: damage tracking (full damage на первый кадр, empty на unchanged).
+// - Gap 5: IPC через unix socket на том же calloop — coexistence с Wayland.
 //
-// ВАЖНО: этот код требует запуск на Linux с wlroots композитором (Hyprland / Sway / labwc).
-// Он НЕ запустится в браузере, в WSL без WSLg, на macOS, в docker без Wayland socket.
+// Режимы работы:
+// - Animated mode (первые 10 кадров): полный frame callback loop, доказывает Gap 2.
+// - Static mode (после 10 кадров): damage=empty, без callback request — экономия CPU.
+// - IPC mode (всегда): unix socket /tmp/wpe-prototype.sock, команды ping/status/quit.
+//
+// ВАЖНО: требует Linux с wlroots композитором (Hyprland / Sway / labwc).
 
-use std::sync::Arc;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixListener;
 use std::time::Instant;
 
-use calloop::{EventLoop, LoopSignal};
+use calloop::generic::Generic;
+use calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction};
 use calloop_wayland_source::WaylandSource;
 
 use smithay_client_toolkit::{
@@ -44,16 +44,8 @@ use wayland_client::{
     Connection, QueueHandle,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Gap 1 answer: calloop-first architecture
-// ─────────────────────────────────────────────────────────────────────
-// Main thread = calloop event loop.
-// Wayland events приходят как calloop events (через calloop-wayland-source).
-// wgpu render вызывается ИЗ callback'ов — тот же thread что Wayland.
-// Никакого tokio. Никакого secondary thread. Простая модель.
-//
-// Если в 0.1 понадобится async I/O (IPC server) — tokio runtime на отдельном
-// thread, mpsc канал для команд в calloop. Но это в wpe-daemon, не здесь.
+const ANIMATED_FRAMES: u32 = 10;
+const IPC_SOCKET_PATH: &str = "/tmp/wpe-prototype.sock";
 
 struct State {
     // Wayland globals
@@ -62,27 +54,29 @@ struct State {
     compositor_state: CompositorState,
     layer_shell: LayerShell,
 
-    // Our layer surface (один на прототип, реальный daemon будет Vec)
+    // Our layer surface
     surface: Option<LayerSurface>,
 
     // Gap 3: lifecycle tracking
-    // configured=false означает initial commit ещё не завершился.
-    // Попытка attach буфера до configured=true = protocol error.
     configured: bool,
 
     // Gap 4: damage tracking
-    // first_frame_rendered=false означает надо нарисовать полный кадр с full damage.
-    // После первого кадра: для статики damage=empty (compositor не перерисовывает).
     first_frame_rendered: bool,
 
-    // Метрики (Gap 6 из SELF-AUDIT — измерить реальные числа)
+    // Gap 2: frame callback mode
+    // true = request frame callbacks continuously (animated/video simulation)
+    // false = no more callbacks (static image, render only on change)
+    animate: bool,
+
+    // Metrics
     start_time: Instant,
     frames_rendered: u32,
+    ipc_commands_handled: u32,
 
     // Clean shutdown
     loop_signal: LoopSignal,
 
-    // wgpu resources (создаются после первого configure)
+    // wgpu resources (created after first configure)
     wgpu_state: Option<WgpuState>,
 }
 
@@ -94,30 +88,24 @@ struct WgpuState {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Gap 3 answer: layer-shell lifecycle state machine
+// Gap 3: layer-shell lifecycle state machine
 // ─────────────────────────────────────────────────────────────────────
-// Правильная последовательность (согласно wlr-layer-shell-unstable-v1):
-//   1. Create layer_surface из wl_surface.
-//   2. Set anchor/size/keyboard_interactivity.
-//   3. surface.commit() — initial commit БЕЗ buffer.
-//   4. [WAIT] compositor присылает configure event.
-//   5. configure.ack() и сохранить размер.
-//   6. Создать wgpu surface из wl_surface.
-//   7. Render первый кадр с full damage.
-//   8. [WAIT] frame callback done.
-//   9. Render следующий кадр (или skip если статика).
-//
-// Нарушение этого порядка (например, attach buffer на шаге 3) = protocol kill.
+// 1. Create layer_surface → set anchor/size → initial commit WITHOUT buffer.
+// 2. WAIT for compositor configure event.
+// 3. ack_configure → create wgpu surface → render first frame.
+// 4. Request frame callback → commit.
+// 5. Compositor sends callback.done → render next frame (Gap 2).
 
 impl LayerShellHandler for State {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
+        println!("[lifecycle] compositor closed our surface");
         self.loop_signal.stop();
     }
 
     fn configure(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _serial: u32,
@@ -128,19 +116,21 @@ impl LayerShellHandler for State {
             w, h, self.start_time.elapsed()
         );
 
-        // Первый configure — инициализируем wgpu.
         if !self.configured {
+            // First configure — initialize wgpu, render first frame.
             self.configured = true;
             self.init_wgpu(layer, w, h);
-            self.render_frame(layer, /* is_first */ true);
+            let wl_surf = layer.wl_surface();
+            self.render_frame(wl_surf, qh, true);
         } else {
-            // Resize случай — переконфигурировать wgpu surface.
+            // Resize — reconfigure wgpu surface, re-render.
             if let Some(wgpu) = &mut self.wgpu_state {
                 wgpu.config.width = w.max(1);
                 wgpu.config.height = h.max(1);
                 wgpu.surface.configure(&wgpu.device, &wgpu.config);
             }
-            self.render_frame(layer, /* is_first */ false);
+            let wl_surf = layer.wl_surface();
+            self.render_frame(wl_surf, qh, false);
         }
     }
 }
@@ -149,12 +139,10 @@ impl State {
     fn init_wgpu(&mut self, layer: &LayerSurface, width: u32, height: u32) {
         println!("[Gap 1] init wgpu on calloop thread (not tokio)");
 
-        // pollster::block_on — дешёвый sync-over-async без tokio.
-        // Это приемлемо: wgpu init случается один раз, не в hot path.
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
-        // SAFETY: wl_surface живёт столько же сколько State.
-        // В production коде это нужно оформить явно через Arc или lifetimes.
+        // SAFETY: wl_surface lives as long as State.
+        // Production code uses Arc<WlSurface>, not transmute.
         let wl_surf = layer.wl_surface();
         let surface = unsafe {
             instance.create_surface_unsafe(
@@ -166,15 +154,14 @@ impl State {
 
         let adapter = pollster::block_on(instance.request_adapter(
             &wgpu::RequestAdapterOptions {
-                // Gap не в SELF-AUDIT но важный: на ноутбуке с hybrid graphics
-                // нужен LowPower (integrated GPU), не HighPerformance (discrete).
-                // Wallpaper daemon не должен жечь батарею на статичной картинке.
                 power_preference: wgpu::PowerPreference::LowPower,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
             },
         ))
         .expect("failed to get adapter");
+
+        println!("[Gap 1] adapter: {:?}", adapter.get_info().name);
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor::default(),
@@ -186,15 +173,13 @@ impl State {
             format: wgpu::TextureFormat::Bgra8Unorm,
             width: width.max(1),
             height: height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,  // vsync
+            present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: wgpu::CompositeAlphaMode::Opaque,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
 
-        // Промежуточная безопасность: Surface<'static> через Box leak
-        // подходит для прототипа. Production — Arc<WlSurface>.
         let surface_static: wgpu::Surface<'static> = unsafe {
             std::mem::transmute(surface)
         };
@@ -204,30 +189,54 @@ impl State {
         });
     }
 
-    fn render_frame(&mut self, layer: &LayerSurface, is_first: bool) {
+    // ─────────────────────────────────────────────────────────────────
+    // Gap 2: FULL frame callback loop
+    // ─────────────────────────────────────────────────────────────────
+    // This method is called from TWO places:
+    //   1. LayerShellHandler::configure — first frame after init/resize.
+    //   2. CompositorHandler::frame    — callback.done fired, next frame.
+    //
+    // The cycle: render → request callback → commit → [compositor] →
+    //            callback.done → render → request callback → commit → ...
+    //
+    // For static content: render once with Full damage, then stop
+    // requesting callbacks. CPU drops to ~0%.
+    //
+    // For animated content (video/shader): request callback every frame.
+    // This method proves both paths work.
+    fn render_frame(
+        &mut self,
+        wl_surf: &wl_surface::WlSurface,
+        qh: &QueueHandle<Self>,
+        is_first: bool,
+    ) {
         let Some(wgpu) = &mut self.wgpu_state else { return };
-
         let frame_start = Instant::now();
 
         let frame = match wgpu.surface.get_current_texture() {
             Ok(f) => f,
             Err(e) => {
-                println!("[Gap 1] get_current_texture error: {:?} — skip frame", e);
+                println!("[render] get_current_texture error: {:?} — skip", e);
                 return;
             }
         };
 
+        // Animate color slightly per frame to visually confirm callback loop.
+        let t = self.frames_rendered as f64 / ANIMATED_FRAMES as f64;
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = wgpu.device.create_command_encoder(&Default::default());
         {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("wpe-prototype solid color"),
+                label: Some("wpe-prototype"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.15, g: 0.20, b: 0.30, a: 1.0,
+                            r: 0.10 + 0.05 * t,
+                            g: 0.15 + 0.10 * t,
+                            b: 0.25 + 0.15 * t,
+                            a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -239,72 +248,83 @@ impl State {
         }
         wgpu.queue.submit([encoder.finish()]);
 
-        // ─────────────────────────────────────────────────────────────────
-        // Gap 4 answer: damage tracking перед present
-        // ─────────────────────────────────────────────────────────────────
-        let wl_surf = layer.wl_surface();
+        // ─── Gap 4: damage ─────────────────────────────────────────
         if is_first || !self.first_frame_rendered {
-            // Полный damage на первый кадр.
             wl_surf.damage_buffer(0, 0, i32::MAX, i32::MAX);
             self.first_frame_rendered = true;
-        } else {
-            // Статика: пустой damage. Compositor не перерисовывает output.
-            // Для video/shader здесь будет full damage каждый кадр.
+        } else if self.animate {
+            // Animated: full damage every frame (color changes).
+            wl_surf.damage_buffer(0, 0, i32::MAX, i32::MAX);
+        }
+        // else: static — no damage, compositor skips compositing.
+
+        // ─── Gap 2: request next frame callback BEFORE commit ──────
+        // This is the critical piece that was missing before.
+        // Without this, the frame callback loop never fires.
+        if self.animate && self.frames_rendered < ANIMATED_FRAMES {
+            wl_surf.frame(qh, wl_surf.clone());
         }
 
-        // ─────────────────────────────────────────────────────────────────
-        // Gap 2 answer: frame callback ПЕРЕД present
-        // ─────────────────────────────────────────────────────────────────
-        // Запрашиваем callback на следующий кадр. Compositor пришлёт done
-        // когда готов нас снова принять — тогда и нарисуем следующий.
-        // Для image backend в этом прототипе мы callback не используем
-        // (статика не требует постоянных кадров), но production video
-        // backend будет wire up FrameCallbackHandler.
-
-        // На wayland-client API frame callback регистрируется перед commit:
-        // let cb = wl_surf.frame(&qh, data);
-        // После callback.done → render_frame(is_first=false).
-
         frame.present();
-
-        // ─────────────────────────────────────────────────────────────────
-        // Gap 3 answer: commit после attach+damage
-        // ─────────────────────────────────────────────────────────────────
-        // wgpu уже сделал attach внутри present(). Нам остаётся commit.
         wl_surf.commit();
 
         self.frames_rendered += 1;
+        let elapsed = frame_start.elapsed();
         println!(
-            "[metrics] frame {} rendered in {:?}",
-            self.frames_rendered, frame_start.elapsed()
+            "[metrics] frame {} rendered in {:?}{}",
+            self.frames_rendered,
+            elapsed,
+            if self.animate { " (animated)" } else { " (static)" }
         );
 
-        if self.frames_rendered >= 3 {
-            // Для прототипа — рисуем 3 кадра и выходим.
-            // Production daemon остаётся живым.
+        // Transition: animated → static after ANIMATED_FRAMES
+        if self.animate && self.frames_rendered >= ANIMATED_FRAMES {
             println!(
-                "[metrics] total runtime: {:?}, frames: {}",
-                self.start_time.elapsed(), self.frames_rendered
+                "[Gap 2] frame callback loop PROVEN: {} frames via callback.done → render → commit → callback",
+                self.frames_rendered
             );
-            self.loop_signal.stop();
+            println!("[Gap 2] switching to static mode — no more frame callbacks");
+            self.animate = false;
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Boilerplate: handlers для SCTK — нужно реализовать чтобы компилировалось
+// Gap 2: CompositorHandler::frame — THE ACTUAL CALLBACK HANDLER
 // ─────────────────────────────────────────────────────────────────────
+// This is called by the compositor when it's ready for the next frame
+// (wl_callback::done event). Previously this was an empty stub with a
+// comment. Now it drives the full render cycle.
 
 impl CompositorHandler for State {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>,
                             _: &wl_surface::WlSurface, _: i32) {}
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>,
                          _: &wl_surface::WlSurface, _: wl_output::Transform) {}
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>,
-             _: &wl_surface::WlSurface, _: u32) {
-        // Gap 2 hook: здесь production код запросил бы следующий кадр
-        // для анимированного контента (video/shader).
+
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        _time: u32,
+    ) {
+        // Gap 2: THIS IS THE FRAME CALLBACK HANDLER.
+        // Compositor sent wl_callback::done — it's ready for our next frame.
+        // We render, request the next callback, and commit.
+        //
+        // This completes the cycle:
+        //   configure → render → request_callback → commit
+        //                         ↓
+        //   callback.done → render → request_callback → commit
+        //                         ↓
+        //   callback.done → render → (stop if static) → commit
+
+        if self.animate && self.frames_rendered < ANIMATED_FRAMES {
+            self.render_frame(surface, qh, false);
+        }
     }
+
     fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>,
                      _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>,
@@ -329,15 +349,70 @@ delegate_layer!(State);
 delegate_registry!(State);
 
 // ─────────────────────────────────────────────────────────────────────
-// main — bootstrap прототипа
+// Gap 5: IPC/calloop coexistence
+// ─────────────────────────────────────────────────────────────────────
+// Proves that a unix socket IPC server can live on the SAME calloop
+// event loop as Wayland events, without tokio, without threads.
+//
+// Commands:
+//   echo "ping" | socat - UNIX-CONNECT:/tmp/wpe-prototype.sock
+//   echo "status" | socat - UNIX-CONNECT:/tmp/wpe-prototype.sock
+//   echo "quit" | socat - UNIX-CONNECT:/tmp/wpe-prototype.sock
+
+fn handle_ipc_client(stream: &mut std::os::unix::net::UnixStream, state: &mut State) {
+    let mut buf = [0u8; 256];
+    let n = match stream.read(&mut buf) {
+        Ok(n) if n > 0 => n,
+        _ => return,
+    };
+
+    let cmd = std::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+    state.ipc_commands_handled += 1;
+
+    let response = match cmd {
+        "ping" => {
+            println!("[ipc] ping → pong");
+            "pong\n".to_string()
+        }
+        "status" => {
+            let msg = format!(
+                "frames={} uptime={:?} animate={} ipc_commands={}\n",
+                state.frames_rendered,
+                state.start_time.elapsed(),
+                state.animate,
+                state.ipc_commands_handled,
+            );
+            println!("[ipc] status → {}", msg.trim());
+            msg
+        }
+        "quit" => {
+            println!("[ipc] quit — shutting down");
+            state.loop_signal.stop();
+            "bye\n".to_string()
+        }
+        other => {
+            println!("[ipc] unknown command: {other:?}");
+            format!("error: unknown command '{other}'\n")
+        }
+    };
+
+    let _ = stream.write_all(response.as_bytes());
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// main
 // ─────────────────────────────────────────────────────────────────────
 
 fn main() {
     println!("wpe-prototype starting, PID={}", std::process::id());
+    println!("IPC socket: {IPC_SOCKET_PATH}");
+    println!("  echo \"ping\" | socat - UNIX-CONNECT:{IPC_SOCKET_PATH}");
+    println!("  echo \"status\" | socat - UNIX-CONNECT:{IPC_SOCKET_PATH}");
+    println!("  echo \"quit\" | socat - UNIX-CONNECT:{IPC_SOCKET_PATH}");
+    println!();
 
     let conn = Connection::connect_to_env()
-        .expect("WAYLAND_DISPLAY not set or compositor not running — \
-                 this prototype requires a running wlroots compositor");
+        .expect("WAYLAND_DISPLAY not set or compositor not running");
     let (globals, event_queue) = registry_queue_init(&conn)
         .expect("failed to init registry");
     let qh = event_queue.handle();
@@ -346,16 +421,41 @@ fn main() {
         .expect("failed to create calloop event loop");
     let loop_handle = event_loop.handle();
 
-    // Gap 1: WaylandSource интегрирует wayland queue в calloop.
-    // Main thread, no threads, no tokio.
+    // Gap 1: Wayland events on calloop, single thread.
     WaylandSource::new(conn.clone(), event_queue)
-        .insert(loop_handle)
+        .insert(loop_handle.clone())
         .expect("failed to insert wayland source into calloop");
 
+    // ─── Gap 5: IPC unix socket on the same calloop ────────────────
+    let _ = std::fs::remove_file(IPC_SOCKET_PATH);
+    let ipc_listener = UnixListener::bind(IPC_SOCKET_PATH)
+        .expect("failed to bind IPC socket");
+    ipc_listener.set_nonblocking(true)
+        .expect("failed to set nonblocking");
+
+    loop_handle.insert_source(
+        Generic::new(ipc_listener, Interest::READ, Mode::Level),
+        |_readiness, listener, state: &mut State| {
+            // Accept new IPC connections on the same calloop thread.
+            // No tokio, no threads — just another event source.
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    handle_ipc_client(&mut stream, state);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => eprintln!("[ipc] accept error: {e}"),
+            }
+            Ok(PostAction::Continue)
+        },
+    ).expect("failed to insert IPC source into calloop");
+
+    println!("[Gap 5] IPC socket registered on calloop — same thread as Wayland");
+
+    // ─── Wayland setup ─────────────────────────────────────────────
     let compositor_state = CompositorState::bind(&globals, &qh)
         .expect("compositor not available");
     let layer_shell = LayerShell::bind(&globals, &qh)
-        .expect("wlr_layer_shell not available — this compositor is not wlroots-based");
+        .expect("wlr_layer_shell not available — not a wlroots compositor");
 
     let wl_surface = compositor_state.create_surface(&qh);
     let layer_surface = layer_shell.create_layer_surface(
@@ -363,10 +463,10 @@ fn main() {
     );
 
     layer_surface.set_anchor(Anchor::all());
-    layer_surface.set_size(0, 0);  // 0,0 = compositor решает (full output size)
+    layer_surface.set_size(0, 0);
     layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
 
-    // Gap 3: initial commit БЕЗ буфера. После этого compositor пришлёт configure.
+    // Gap 3: initial commit WITHOUT buffer.
     layer_surface.commit();
 
     let mut state = State {
@@ -377,15 +477,29 @@ fn main() {
         surface: Some(layer_surface),
         configured: false,
         first_frame_rendered: false,
+        animate: true, // Start in animated mode to prove Gap 2
         start_time: Instant::now(),
         frames_rendered: 0,
+        ipc_commands_handled: 0,
         loop_signal: event_loop.get_signal(),
         wgpu_state: None,
     };
 
     println!("[Gap 1] entering calloop run — single thread, no tokio");
+    println!("[Gap 2] will render {} frames via callback loop, then switch to static", ANIMATED_FRAMES);
+    println!();
+
+    // Run until quit IPC command or SIGINT.
+    // After animated frames complete, daemon stays alive for IPC testing.
     event_loop.run(None, &mut state, |_| {})
         .expect("event loop failed");
 
-    println!("prototype done.");
+    // Cleanup
+    let _ = std::fs::remove_file(IPC_SOCKET_PATH);
+    println!(
+        "\nprototype done. frames={} uptime={:?} ipc_commands={}",
+        state.frames_rendered,
+        state.start_time.elapsed(),
+        state.ipc_commands_handled,
+    );
 }

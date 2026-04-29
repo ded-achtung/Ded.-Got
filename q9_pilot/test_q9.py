@@ -5,14 +5,14 @@ Stdlib unittest, no external deps.
 
 import unittest
 
-from pilot import run_alternative, run_primary
+from pilot import run_alternative_q9, run_primary_q9
 
 QUESTION = "сколько специальных методов реализует класс Vector в примере 1-2"
 
 
 class TestQ9Primary(unittest.TestCase):
     def setUp(self):
-        self.state, self.winner = run_primary(QUESTION)
+        self.state, self.winner = run_primary_q9(QUESTION)
 
     def test_three_typed_claims_extracted(self):
         types = {v["source_type"] for v in self.state.K.values()}
@@ -53,7 +53,7 @@ class TestQ9Primary(unittest.TestCase):
 
 class TestQ9Alternative(unittest.TestCase):
     def setUp(self):
-        self.state, self.winner = run_alternative(QUESTION)
+        self.state, self.winner = run_alternative_q9(QUESTION)
 
     def test_alternative_path_stalls_without_P(self):
         self.assertIsNone(

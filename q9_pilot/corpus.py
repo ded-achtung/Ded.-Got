@@ -1,10 +1,14 @@
 """
-Stub corpus for Q9 pilot. Chunks reconstructed from the trace narrative.
-Not a faithful quote of Fluent Python — text matches what the trace claimed
-the chunks contain, so the pilot exercises the same disambiguation surface.
+Corpora for the pilot.
+
+Q9 chunks (c008-c011) are stubs reconstructed from the trace narrative — text
+matches what the v3.x trace claimed the chunks contain.
+
+Q4 chunks (c003, c004, c033) are real fragments from Fluent Python ch.1-2
+(FrenchDeck), supplied by the user from the test-retest corpus archive.
 """
 
-CHUNKS: dict[str, dict] = {
+Q9_CHUNKS: dict[str, dict] = {
     "c008": {
         "doc": "fluent_ch12",
         "kind": "prose",
@@ -59,3 +63,59 @@ CHUNKS: dict[str, dict] = {
         ),
     },
 }
+
+
+Q4_CHUNKS: dict[str, dict] = {
+    "c003": {
+        "doc": "fluent_ch1",
+        "kind": "code",
+        "text": (
+            "A Pythonic Card Deck Example 1-1 is simple, but it demonstrates "
+            "the power of implementing just two special methods, __getitem__ "
+            "and __len__. Example 1-1. A deck as a sequence of playing cards\n"
+            "\n"
+            "import collections\n"
+            "Card = collections.namedtuple('Card', ['rank', 'suit'])\n"
+            "\n"
+            "class FrenchDeck:\n"
+            "    ranks = [str(n) for n in range(2, 11)] + list('JQKA')\n"
+            "    suits = 'spades diamonds clubs hearts'.split()\n"
+            "\n"
+            "    def __init__(self):\n"
+            "        self._cards = [Card(rank, suit) for suit in self.suits\n"
+            "                                        for rank in self.ranks]\n"
+            "    def __len__(self):\n"
+            "        return len(self._cards)\n"
+            "    def __getitem__(self, position):\n"
+            "        return self._cards[position]\n"
+        ),
+    },
+    "c004": {
+        "doc": "fluent_ch1",
+        "kind": "code",
+        "text": (
+            ">>> deck = FrenchDeck()\n"
+            ">>> len(deck)\n"
+            "52\n"
+            "Reading specific cards from the deck — say, the first or the "
+            "last — is easy, thanks to the __getitem__ method:\n"
+            ">>> deck[0]\n"
+            "Card(rank='2', suit='spades')\n"
+        ),
+    },
+    "c033": {
+        "doc": "fluent_ch2",
+        "kind": "prose",
+        "text": (
+            "In Example 1-1 (Chapter 1), I used the following expression to "
+            "initialize a card deck with a list made of 52 cards from all 13 "
+            "ranks of each of the 4 suits, sorted by suit, then rank:\n"
+            "        self._cards = [Card(rank, suit) for suit in self.suits\n"
+            "                                        for rank in self.ranks]\n"
+        ),
+    },
+}
+
+
+# Backwards-compat alias for the original Q9 tests.
+CHUNKS = Q9_CHUNKS

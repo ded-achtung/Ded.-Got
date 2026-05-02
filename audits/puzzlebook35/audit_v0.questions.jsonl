@@ -1,0 +1,35 @@
+{"qid": "Q1", "question": "Какую минимальную версию Python требует книга?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q2", "question": "Какие два внешних Python-модуля устанавливаются через pip согласно подготовке среды?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15", "pilot_role": "Q-known-hit"}
+{"qid": "Q3", "question": "Что должна возвращать функция filter_strings_containing_a из задачи 1?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q4", "question": "Какой URL git-репозитория с заготовками кода?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q5", "question": "Сколько серьёзных задач в книге без учёта дополнительных?", "intent": "how_many", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q6", "question": "Какие три редактора кода рекомендованы автором для работы с книгой?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q7", "question": "Кто является автором задач в книге?", "intent": "who", "question_type": "ambiguous", "active_corpus": "puzzlebook_intro_t1_15", "pilot_role": "ambiguity_test"}
+{"qid": "Q8", "question": "Какая временная сложность означает, что время выполнения не зависит от входных данных?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q9", "question": "В чём разница между сложностями O(n) и O(n²) согласно объяснению в книге?", "intent": "how", "question_type": "comparative", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q10", "question": "Какой тип возвращает функция sum_if_less_than_fifty?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q11", "question": "В каких задачах из 1-15 функция должна в каких-то случаях возвращать None?", "intent": "what", "question_type": "reasoning", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q12", "question": "Что должна возвращать функция remove_vowels на входе \"aeiouAEIOU\"?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q13", "question": "Можно ли в решении задач свободно импортировать произвольные библиотеки и почему?", "intent": "why", "question_type": "conceptual", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q14", "question": "Сколько параметров принимает функция filter_strings_containing_a?", "intent": "how_many", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q15", "question": "Какой тип возвращает get_second_largest_number, если в списке только один элемент?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q16", "question": "Зачем в книге используется типизация в определениях функций?", "intent": "why", "question_type": "conceptual", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q17", "question": "Что такое ASCII согласно предварительным сведениям задачи 12?", "intent": "what", "question_type": "conceptual", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q18", "question": "Какой ASCII-код у символа \"A\" согласно примеру в книге?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q19", "question": "Какое ограничение на размер входного списка имеет задача reverse_first_five_positions?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q20", "question": "Какие требования к решению задачи 14 помимо корректности?", "intent": "what", "question_type": "conceptual", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q21", "question": "В чём разница между «серьёзными» и «шуточными» задачами в книге?", "intent": "how", "question_type": "comparative", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q22", "question": "Когда была впервые выпущена книга «Programming Puzzles, Python Edition»?", "intent": "when", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15", "pilot_role": "not_in_corpus_test"}
+{"qid": "Q23", "question": "Почему важно учитывать крайние случаи, например пустой список или отрицательное число?", "intent": "why", "question_type": "conceptual", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q24", "question": "Какой код Морзе соответствует букве \"A\"?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q25", "question": "Чем должен быть представлен пробел в выходной строке кода Морзе?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q26", "question": "Какое предлагаемое решение задачи 5 (get_longest_string)?", "intent": "how", "question_type": "procedural", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q27", "question": "В чём отличие задачи 1 (filter_strings_containing_a) и задачи 13 (filter_strings_with_vowels) по критерию фильтрации?", "intent": "how", "question_type": "comparative", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q28", "question": "Что должна возвращать функция filter_palindromes для пустого списка?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q29", "question": "Какой первый шаг подготовки рабочей среды для решения задач?", "intent": "how", "question_type": "procedural", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q30", "question": "Какие операционные системы поддерживаются для установки Python согласно книге?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q31", "question": "Можно ли решить задачу 9 (string_to_morse_code) без использования словаря?", "intent": "how", "question_type": "reasoning", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q32", "question": "Почему задачи в первой части книги рекомендуется решать по порядку?", "intent": "why", "question_type": "conceptual", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q33", "question": "Какой тип входного параметра у функции sum_even?", "intent": "what", "question_type": "factoid", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q34", "question": "Сложность задач в «серьёзной» части возрастает или убывает с номером задачи?", "intent": "how", "question_type": "comparative", "active_corpus": "puzzlebook_intro_t1_15"}
+{"qid": "Q35", "question": "Какая задача из первых 15 лучше всего демонстрирует работу со срезами Python?", "intent": "what", "question_type": "ambiguous", "active_corpus": "puzzlebook_intro_t1_15"}

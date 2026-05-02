@@ -1,0 +1,30 @@
+{
+  "run_id": "2026-05-02_v3.20_puzzlebook_pilot_simulated",
+  "system_version": "v3.20-simulated",
+  "git_commit": "n/a-simulated-pilot",
+  "benchmark": "puzzlebook35",
+  "corpus": "puzzlebook_intro_t1_15",
+  "corpus_source": "Whiteside, M. — «Python в задачах и упражнениях», ДМК Пресс 2025 (рус. перевод 'Programming Puzzles, Python Edition' 2023). Pages 12–38.",
+  "chunking_version": "puzzlebook_paraphrased_v0",
+  "retrieval_top_k": 10,
+  "downstream_effective_k": 4,
+  "features": {
+    "probe_v0": true,
+    "question_fit_v0": true,
+    "intent_conditioned_retrieval": false,
+    "episode_lite": false
+  },
+  "simulated": true,
+  "what_is_real_vs_constructed": {
+    "corpus_pages": "REAL — extracted from actual PDF pp.12-38 of Whiteside puzzlebook.",
+    "chunk_content": "PARAPHRASED — chunks are functional reconstructions of source sections in own words, with verbatim retention of function signatures, library names, version numbers, URLs, and other facts. Not direct PDF text dump (copyright + extraction quality concerns).",
+    "chunk_ids_and_boundaries": "CONSTRUCTED — boundary decisions and ID scheme are mine; not output of a real chunking pipeline.",
+    "questions": "CONSTRUCTED from real content — derived from material in pp.12-38, formulated by me; not from external benchmark source.",
+    "runtime_metrics_jsonl": "SIMULATED — top-k ordering and fit_status are my plausible estimates of what a baseline retrieval system might return. No real retrieval system was run.",
+    "audit_labels": "MANUAL — by claude-opus-4-7 as LLM single rater."
+  },
+  "simulation_notes": "Chunks now anchored in real source material (improvement over previous fluent35 synthetic test bed where chunks were also constructed). Confirmation bias on the 'rater self-constructed chunks' axis is reduced but not eliminated: rater still constructed questions and simulated run. Use this manifest only to validate audit_v0 schema works on real material; do not use for any gate decision or before/after comparison.",
+  "rater": "claude-opus-4-7",
+  "rater_type": "llm_single_rater",
+  "notes": "Pilot v0.2.1 — Q-known-hit only (Q2 = pygame/PythonTurtle pip install). Q22 (not_in_corpus test for книга publication date) and Q7 (ambiguity test for who) are deferred — protocol §12 stop-rule applies: review pilot 1 before proceeding."
+}

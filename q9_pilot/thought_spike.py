@@ -45,15 +45,31 @@ PATH_DIGIT_RE = re.compile(r"/\d+(?:/|\b)")
 
 # ---------------- update_knowledge ----------------
 
-def update_knowledge(K: list, obs: dict, Ex: dict) -> list:
-    """Each new K entry carries: which H it supports, whether it links Ex,
-    and an evidence_verdict. If a year-shaped token is present but its
-    context fails Ex.forbidden, it lands as `rejected_type_mismatch`,
-    NOT silently dropped."""
+def update_knowledge(state: "ThoughtState", obs: dict) -> list:
+    """Reads obs IN CONTEXT of state.H (current leader), state.T (open
+    tensions), state.K (prior accumulation). The verdict on a new entry,
+    and the H it weakens/supports, depends on what the system already
+    believes — not just on regex matches in obs.
+
+    Same regexes as before; what changed is that:
+      - absence weakens specific H by name (the ones that *expected*
+        evidence here), not just supports h4 generically
+      - the verdict label distinguishes 'absent_extending_gap' (early
+        absences before convergence) from 'absent_confirming_leader'
+        (absences after h4 already dominant) — same physical event,
+        different epistemic role
+      - type-rejection records *what* the rejected token would have
+        meant for *which* H if it weren't a decoy
+    """
     text = obs.get("text", "")
     cid = obs.get("id", "?")
-    new = []
+    H = state.H
+    leader = max(H, key=lambda h: h["weight"]) if H else None
+    leader_id = leader["id"] if leader else None
+    convergence_active = any(t["kind"] == "convergence" for t in state.T)
+    candidate_hyps = [h["id"] for h in H if h["id"] != "h4"]
 
+    new = []
     years = YEAR_RE.findall(text)
     py_versions = PYTHON_VERSION_RE.findall(text)
     py_version_digits = {tok for v in py_versions for tok in v.split(".")}
@@ -68,22 +84,25 @@ def update_knowledge(K: list, obs: dict, Ex: dict) -> list:
                 new.append({
                     "from": cid,
                     "verbatim": y_str,
-                    "finding": f"date-shaped token '{y_str}' inside Python "
-                                "version reference — type-rejected",
+                    "finding": (f"date-shaped token '{y_str}' inside Python "
+                                f"version — would have supported "
+                                f"{candidate_hyps} if real, type-rejected"),
                     "evidence_verdict": "rejected_type_mismatch",
                     "links_to_Ex": False,
-                    "supports_H": ["h4"],  # rejection nudges 'not in corpus'
+                    "supports_H": ["h4"],
+                    "weakens_H": [],   # rejection nudges h4 only, doesn't weaken candidates
                     "opposes_H": [],
                 })
             else:
                 new.append({
                     "from": cid,
                     "verbatim": y_str,
-                    "finding": f"raw year token '{y}' in prose context",
+                    "finding": f"raw year '{y}' in prose context — candidate",
                     "value": y,
                     "evidence_verdict": "candidate",
                     "links_to_Ex": True,
-                    "supports_H": ["h1", "h2", "h3"],
+                    "supports_H": candidate_hyps,
+                    "weakens_H": ["h4"],   # candidate weakens out-of-corpus
                     "opposes_H": ["h4"],
                 })
     elif py_versions or PATH_DIGIT_RE.search(text):
@@ -91,23 +110,57 @@ def update_knowledge(K: list, obs: dict, Ex: dict) -> list:
                    else "URL path digits")
         new.append({
             "from": cid,
-            "finding": f"numeric markers present ({marker}) but type-incompatible",
+            "finding": (f"numeric markers ({marker}) but type-incompatible "
+                        f"with Ex.type=date — these are decoys for "
+                        f"{candidate_hyps}"),
             "evidence_verdict": "off_topic",
             "links_to_Ex": False,
             "supports_H": ["h4"],
+            "weakens_H": candidate_hyps,   # off-topic numbers in chunk that
+                                            # COULD have held a date but didn't
             "opposes_H": [],
         })
     else:
+        # absence: contextual verdict
+        if convergence_active and leader_id == "h4":
+            verdict = "absent_confirming_leader"
+            note = "another empty chunk after h4 already dominant"
+        else:
+            verdict = "absent_extending_gap"
+            note = "expected date binding, none found"
         new.append({
             "from": cid,
-            "finding": "no date or year markers; chunk talks about "
-                       f"{_sniff_topic(text)}",
-            "evidence_verdict": "absent",
+            "finding": (f"no date markers; topic={_sniff_topic(text)}; "
+                        f"{note}"),
+            "evidence_verdict": verdict,
             "links_to_Ex": False,
             "supports_H": ["h4"],
+            "weakens_H": candidate_hyps,
             "opposes_H": [],
         })
-    return K + new
+    return state.K + new
+
+
+def reevaluate_existing_K(state: "ThoughtState") -> list:
+    """Inner-loop pass: relabel verdicts on existing K entries given current
+    H/T. Same K membership, possibly different verdict tags. No new obs.
+
+    Today this is small: an 'absent_extending_gap' entry promotes to
+    'absent_confirming_leader' once convergence is active. That changes
+    nothing arithmetically but reflects the entry's *current* role."""
+    convergence_active = any(t["kind"] == "convergence" for t in state.T)
+    leader = max(state.H, key=lambda h: h["weight"]) if state.H else None
+    leader_id = leader["id"] if leader else None
+
+    out = []
+    for k in state.K:
+        if (k.get("evidence_verdict") == "absent_extending_gap"
+                and convergence_active and leader_id == "h4"):
+            out.append({**k, "evidence_verdict": "absent_confirming_leader",
+                        "_relabelled": True})
+        else:
+            out.append(k)
+    return out
 
 
 def _sniff_topic(text: str) -> str:
@@ -128,11 +181,27 @@ def _sniff_topic(text: str) -> str:
 
 # ---------------- revise_hypotheses ----------------
 
-def revise_hypotheses(H: list, K: list, Ex: dict) -> list:
+def revise_hypotheses(state: "ThoughtState") -> list:
+    """Pure-K target weight: weight is a function of K and the immutable
+    base weight (set in initial_state). Inner-loop iterations therefore
+    converge: same K -> same target, no compounding offsets.
+
+    Status reads T (convergence -> non-leader fading) and the step's
+    *initial* weight (state.H[i]['_step_initial']) so the growing/weakening
+    tag reflects movement-this-step, not movement-this-iter.
+    """
+    H = state.H
+    K = state.K
+    T = state.T
+    convergence_active = any(t["kind"] == "convergence" for t in T)
+    leader_id = _leader_id(H)
+
     out = []
     for h in H:
         hid = h["id"]
-        prev_w = h["weight"]
+        base = h.get("_base", h["weight"])
+        step_initial = h.get("_step_initial", h["weight"])
+
         supports_real = sum(
             1 for k in K
             if hid in k.get("supports_H", [])
@@ -141,82 +210,102 @@ def revise_hypotheses(H: list, K: list, Ex: dict) -> list:
         supports_indirect = sum(
             1 for k in K
             if hid in k.get("supports_H", [])
-            and k.get("evidence_verdict") in ("absent", "off_topic",
-                                              "rejected_type_mismatch")
+            and k.get("evidence_verdict") in (
+                "absent_extending_gap", "absent_confirming_leader",
+                "off_topic", "rejected_type_mismatch",
+            )
         )
+        weakened = sum(1 for k in K if hid in k.get("weakens_H", []))
         opposed = sum(1 for k in K if hid in k.get("opposes_H", []))
 
-        # h4 (out-of-corpus) grows when nothing supports h1-h3
         if hid == "h4":
-            new_w = min(1.0, prev_w + 0.10 * supports_indirect - 0.20 * opposed)
+            target = max(0.0, min(1.0,
+                base + 0.10 * supports_indirect - 0.25 * supports_real,
+            ))
         else:
-            new_w = max(0.0, prev_w + 0.20 * supports_real - 0.05 * supports_indirect)
+            target = max(0.0, min(1.0,
+                base + 0.20 * supports_real - 0.05 * weakened - 0.05 * opposed,
+            ))
 
-        # status: distinguish 'fading by elimination' from 'stable'
-        if new_w > prev_w + 0.01:
-            status = "growing"
-        elif supports_indirect >= 2 and supports_real == 0:
+        # status: against step_initial (preserved across inner iters)
+        if convergence_active and hid != leader_id:
             status = "fading"
-        elif opposed >= 1 and supports_real >= 1:
+        elif target > step_initial + 0.005:
+            status = "growing"
+        elif target < step_initial - 0.005:
+            status = "weakening"
+        elif weakened >= 1 and supports_real >= 1:
             status = "disputed"
         else:
             status = "stable"
 
-        out.append({**h, "weight": round(new_w, 3), "status": status})
+        out.append({**h, "weight": round(target, 3), "status": status})
     return out
+
+
+def _leader_id(H: list) -> str | None:
+    if not H:
+        return None
+    return max(H, key=lambda h: h["weight"])["id"]
 
 
 # ---------------- recompute_tensions ----------------
 
-def recompute_tensions(H: list, K: list, Ex: dict, G: dict) -> list:
+def recompute_tensions(state: "ThoughtState") -> list:
+    """Reads H statuses (fading non-leaders strengthen convergence),
+    reads K. T entries are the *current* set, not an accumulation —
+    if a tension is resolved by inner-loop iteration, it disappears."""
+    H = state.H
+    K = state.K
+    Ex = state.Ex
     T = []
 
     linked = sum(1 for k in K if k.get("links_to_Ex"))
     if linked == 0 and len(K) >= 1:
         T.append({
             "kind": "gap",
-            "what": f"Ex.must_link_to {Ex.get('must_link_to')} unsatisfied "
-                     f"after {len(K)} observations; Ex points to a date "
-                     "binding to the book entity, none of K provides one",
+            "what": (f"Ex.must_link_to {Ex.get('must_link_to')} unsatisfied "
+                     f"after {len(K)} observations"),
             "severity": "HIGH" if len(K) >= 3 else "MEDIUM",
         })
 
-    rejects = [k for k in K if k.get("evidence_verdict") == "rejected_type_mismatch"]
+    rejects = [k for k in K
+               if k.get("evidence_verdict") == "rejected_type_mismatch"]
     if rejects:
         T.append({
             "kind": "type_mismatch",
-            "what": f"{len(rejects)} year-shaped token(s) appeared but in "
-                     "Python-version contexts (Ex.forbidden hit) — system "
-                     "actively refuses these as decoys, not silently",
+            "what": (f"{len(rejects)} year-shaped token(s) appeared but in "
+                      "Python-version contexts (Ex.forbidden hit)"),
             "severity": "MEDIUM",
             "examples": [r.get("verbatim") for r in rejects],
         })
 
-    # drift: last 3 obs added no candidate evidence
     if len(K) >= 3:
         recent = K[-3:]
         if all(k.get("evidence_verdict") != "candidate" for k in recent):
             T.append({
                 "kind": "drift",
-                "what": "last 3 observations produced no candidate evidence; "
-                         "possibility space narrowing toward refuse",
+                "what": ("last 3 observations produced no candidate "
+                          "evidence; possibility space narrowing"),
                 "severity": "INFORMATIONAL",
             })
 
-    # convergence: h4 dominant
+    # convergence: h4 dominant AND non-leaders fading
     h4 = next((h for h in H if h["id"] == "h4"), None)
+    others = [h for h in H if h["id"] != "h4"]
     if h4 and h4["weight"] >= 0.55:
-        h_top_other = max(
-            (h for h in H if h["id"] != "h4"),
-            key=lambda h: h["weight"], default=None,
+        top_other = max(others, key=lambda h: h["weight"]) if others else None
+        margin = (h4["weight"] - top_other["weight"]) if top_other else 1.0
+        non_leader_fading = (
+            all(h["status"] in ("fading", "weakening", "stable")
+                and h["weight"] < h4["weight"] for h in others)
         )
-        if h_top_other and h4["weight"] - h_top_other["weight"] >= 0.15:
+        if margin >= 0.15 and non_leader_fading:
             T.append({
                 "kind": "convergence",
-                "what": f"h4 weight {h4['weight']} dominates next "
-                         f"({h_top_other['id']}: {h_top_other['weight']}) "
-                         "by margin >=0.15 — refuse becomes the supported "
-                         "answer, not a fallback",
+                "what": (f"h4 weight {h4['weight']} dominates next "
+                          f"({top_other['id']}: {top_other['weight']}) "
+                          f"by margin {margin:.2f}; non-leaders fading"),
                 "severity": "RESOLVED",
             })
 
@@ -271,26 +360,89 @@ def self_evaluate(prev: ThoughtState, K: list, H: list, T: list,
             "note": "K grew, H stable, T unchanged"}
 
 
-# ---------------- think_step ----------------
+# ---------------- think_step (fixed-point) ----------------
+
+MAX_INNER_ITERS = 4
+
+
+def _snapshot(state: ThoughtState) -> tuple:
+    """What 'stable' means: H weights+statuses, T kinds, K verdicts."""
+    return (
+        tuple((h["id"], h["weight"], h["status"]) for h in state.H),
+        tuple((t["kind"], t.get("severity")) for t in state.T),
+        tuple(k.get("evidence_verdict") for k in state.K),
+    )
+
 
 def think_step(state: ThoughtState, obs: Any) -> ThoughtState:
-    new_K = update_knowledge(state.K, obs, state.Ex)
-    new_H = revise_hypotheses(state.H, new_K, state.Ex)
-    new_T = recompute_tensions(new_H, new_K, state.Ex, state.G)
-    new_E = self_evaluate(state, new_K, new_H, new_T, obs)
+    """Single observation, but K-H-T iterate to fixed-point inside.
+
+    Pass 0: ingest obs into K.
+    Inner loop: revise H reading T+K; recompute T reading H+K;
+                relabel existing K verdicts in light of new H+T.
+                Repeat until snapshot stable or MAX_INNER_ITERS.
+    Then: self_evaluate against the OUTER previous state.
+    """
+    # iter 0 — ingest new observation. Stamp _step_initial so status
+    # comparisons inside the inner loop measure movement-this-step,
+    # not oscillation across inner iterations.
+    K = update_knowledge(state, obs)
+    H_with_step_initial = [
+        {**h, "_step_initial": h["weight"]} for h in state.H
+    ]
+    work = ThoughtState(
+        G=state.G, Ex=state.Ex,
+        K=K, H=H_with_step_initial, T=state.T,
+        E=state.E, history=state.history,
+    )
+
+    iters_run = 0
+    for i in range(MAX_INNER_ITERS):
+        iters_run = i + 1
+        before = _snapshot(work)
+        # H reads K+T
+        new_H = revise_hypotheses(work)
+        work = ThoughtState(
+            G=work.G, Ex=work.Ex, K=work.K,
+            H=new_H, T=work.T,
+            E=work.E, history=work.history,
+        )
+        # T reads H+K
+        new_T = recompute_tensions(work)
+        work = ThoughtState(
+            G=work.G, Ex=work.Ex, K=work.K,
+            H=work.H, T=new_T,
+            E=work.E, history=work.history,
+        )
+        # K relabel reads H+T
+        new_K = reevaluate_existing_K(work)
+        work = ThoughtState(
+            G=work.G, Ex=work.Ex, K=new_K,
+            H=work.H, T=work.T,
+            E=work.E, history=work.history,
+        )
+        if _snapshot(work) == before:
+            break
+
+    new_E = self_evaluate(state, work.K, work.H, work.T, obs)
+    new_E["inner_iters"] = iters_run
 
     return ThoughtState(
         G=state.G, Ex=state.Ex,
-        K=new_K, H=new_H, T=new_T, E=new_E,
+        K=work.K, H=work.H, T=work.T, E=new_E,
         history=state.history + [{
             "obs_id": obs.get("id"),
-            "K_size": len(new_K),
-            "K_last": new_K[-1] if new_K else None,
+            "K_size": len(work.K),
+            "K_last": work.K[-1] if work.K else None,
+            "K_relabelled_count": sum(
+                1 for k in work.K if k.get("_relabelled")
+            ),
             "H": [{"id": h["id"], "w": h["weight"], "s": h["status"]}
-                  for h in new_H],
+                  for h in work.H],
             "T": [{"kind": t["kind"], "sev": t["severity"],
-                   "what": t["what"]} for t in new_T],
+                   "what": t["what"]} for t in work.T],
             "E": new_E,
+            "inner_iters": iters_run,
         }],
     )
 
@@ -332,13 +484,13 @@ def initial_state() -> ThoughtState:
         },
         H=[
             {"id": "h1", "reading": "year of English original publication",
-             "weight": 0.30, "status": "stable"},
+             "_base": 0.30, "weight": 0.30, "status": "stable"},
             {"id": "h2", "reading": "year of Russian translation",
-             "weight": 0.25, "status": "stable"},
+             "_base": 0.25, "weight": 0.25, "status": "stable"},
             {"id": "h3", "reading": "copyright year of an edition",
-             "weight": 0.20, "status": "stable"},
+             "_base": 0.20, "weight": 0.20, "status": "stable"},
             {"id": "h4", "reading": "answer not present in active corpus",
-             "weight": 0.25, "status": "stable"},
+             "_base": 0.25, "weight": 0.25, "status": "stable"},
         ],
         K=[],
         T=[],
@@ -421,7 +573,10 @@ def show(state: ThoughtState) -> None:
     print()
 
     for i, step in enumerate(state.history, 1):
-        print(f"--- step {i}: observed {step['obs_id']} ---")
+        iters = step.get("inner_iters", "?")
+        relabel = step.get("K_relabelled_count", 0)
+        print(f"--- step {i}: observed {step['obs_id']} "
+              f"(inner_iters={iters}, K_relabelled={relabel}) ---")
         kl = step["K_last"]
         verdict = kl.get("evidence_verdict")
         finding = kl.get("finding")

@@ -56,6 +56,15 @@ the year-regex finds no `(19|20)\d{2}` hits in the top-k, so the baseline
 refuses. This is the expected canary — if Q22 ever flips to `hit` without
 a year appearing in the corpus, the fit_check is broken.
 
+> **Caveat — `intent=how` is not covered by fit_check v0.** Questions
+> like **Q26** (`Какое предлагаемое решение задачи 5`) and **Q31** (`решить
+> задачу 9 без словаря`) ask for solutions that live outside pp.12–38;
+> `audit_v0.preflight.jsonl` flags them `not_in_corpus`. baseline_v0
+> nevertheless returns `final_outcome=hit` (intent=how → skipped → hit).
+> Do **not** compare baseline_v0 outcomes for these qids with pre-flight
+> as if they should agree — they were measured against different policies.
+> See `NOTES.md` for an eye-pass list of additional likely false-hits.
+
 ## Validate
 
 ```bash

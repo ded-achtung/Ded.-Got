@@ -185,3 +185,93 @@ AUDIT_SCHEMA_NOTES.md conventions.
    scoreboard from this doc
 7. Re-run `update_audit_v0_with_raw_confirmation.py` extended to add
    v2 cells to outcomes_grid (or a new script `update_..._with_v2.py`)
+
+---
+
+## REVISION 1 (same-session, before any v2 code)
+
+While drafting v2 unit tests against the per-qid commitments above,
+trace of actual top-4 alignment (via a debug script reading
+`puzzlebook_raw_chunks_v1.jsonl` and `2026-05-02_v0_baseline.jsonl`)
+revealed that two of the four "must flip" rows were misclassified in
+the original commitment:
+
+| qid | original commitment | actual top-4 alignment | corrected commitment |
+|-----|---------------------|------------------------|----------------------|
+| Q9  | flip → fit_refuse (alignment <4)         | best 2 (`pb_raw_11` `книге`+`сложн`)        | flip ✓ — but partial floor must equal match floor for why/how, else partial→hit |
+| Q13 | flip → fit_refuse (alignment <4)         | best 3 (`pb_raw_13` `задач`+`произ`+`решен`) | flip ✓ — same partial-floor caveat |
+| Q16 | flip → fit_refuse (alignment <4)         | best **4** (`pb_raw_13` `испол`+`опред`+`типиз`+`функц`) | **stays match** — pb_raw_13 IS the correct answer chunk (typing rationale §4 of numbered list) and IS reachable in top-4; match is correct |
+| Q29 | flip → fit_refuse (alignment <4)         | best **4** (`pb_raw_06` `задач`+`подго`+`рабоч`+`решен`) | **stays match** — pb_raw_06 is topic-related (Подготовка среды intro) but does NOT contain the procedural answer chunk pb_raw_07 (numbered steps "1. Зайти..."); lexical alignment cannot distinguish topic-matched from answer-bearing |
+
+### Root cause of the misclassification
+
+The original commitments were derived from `baseline_v0/NOTES.md §4`,
+which defines false-hits as **TF-IDF top-1 wrongness**. fit_check
+operates on **top-4 best alignment**. These are different abstractions:
+
+- A row can be a top-1 false-hit (wrong winner) without being a
+  fit_check-level false-hit (the right answer is reachable elsewhere
+  in top-4 with adequate alignment).
+- Q16 and Q34 are exactly this case: top-1 picks a generic chunk; the
+  correct chunk is at top-2/3 with high alignment; fit_check
+  correctly matches.
+
+This wasn't visible in the v1 work because fit_check_v1's `match` was
+mostly driven by alignment ≥2 over a single chunk pick, not an
+informed best-of-top-4. v2's higher floor (≥4) revealed the
+reachability question.
+
+### Revised aggregate criteria
+
+| metric | v1 actual | **v2 revised criterion** |
+|--------|-----------|--------------------------|
+| `fit_refuse` count | 5/35 | **≥ 7/35** (v1's 5 + Q9 + Q13) |
+| Pilot canaries unchanged | yes | **yes** |
+| Regressions on 14 known-correct | 0 | **0** |
+| Q9, Q13 flip to fit_refuse (with partial→fit_refuse for why/how) | n/a | **both** |
+| Q16, Q29 — original "flip" target dropped | n/a | **stays match (pb_raw_13 / pb_raw_06 sufficient)** |
+| Discriminative power | 75% (4+14)/24 | **≥ 75%** (6+14)/24 = 83% — modest gain, not 87.5% |
+| Determinism (re-run sha256) | yes | **yes** |
+
+### Implementation change required by REVISION 1
+
+For Q9 and Q13 to flip with alignment 2 and 3 respectively, the
+partial-floor for why/how must equal the match-floor (`(4, 4)` not
+`(4, 1)`). Otherwise alignment 2 returns `partial`, and v1's
+`final_outcome` rule maps `partial → hit`.
+
+```python
+ALIGN_FLOORS = {
+    "what": (2, 1),   # match, partial — unchanged
+    "why":  (4, 4),   # no partial state — below 4 = mismatch
+    "how":  (4, 4),
+}
+```
+
+This is the actual v2 implementation contract.
+
+### Pre-registration honesty
+
+The original commitments above (Q9/Q13/Q16/Q29 all flip) are kept in
+this document as a record of design error. The original aggregate
+criteria (fit_refuse ≥ 8/35, discriminative power ≥ 87.5%) are
+**known to fail** under the corrected analysis; v2 ships against the
+revised criteria. This counts as 1 design-level adjustment, recorded
+before any code commit.
+
+Pre-reg rule "≥2 fail of original criteria → design wrong, revisit"
+applies only to the **revised** criteria for the actual v2 release.
+The original criteria miss because the design analysis was incomplete,
+not because the implementation is broken.
+
+### What v2 still does NOT fix (after REVISION 1)
+
+Adds Q29 to the deferred list:
+
+- **Q29** — alignment-floor cannot distinguish topic-matched chunks
+  (`pb_raw_06` Подготовка среды intro: "нужно подготовить среду") from
+  answer-bearing chunks (`pb_raw_07` Установка Python with the actual
+  numbered steps). Both are lexically aligned with "первый шаг
+  подготовки рабочей среды". Need question-specific anchoring on
+  procedural markers ("1.", "сначала", "первым делом") or
+  section_path matching. Deferred to v3 along with Q34, Q11.

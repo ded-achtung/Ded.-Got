@@ -81,3 +81,18 @@ Caveats:
 
 Do not propagate these as ground truth into the next pilot. Use them
 as a starting checklist when raw-chunk audit rows are constructed.
+
+## 5. Q7 на raw данных — confirmation двух failure modes
+
+Q7 (`who`/ambiguous) при baseline retrieval v0 на raw chunks дал `match → hit`. Top-4: pb_raw_05, pb_raw_11, pb_raw_04, pb_raw_13. Capitalized-token regex match'нул 10 «имён» (`Python`, `Всюду`, `Выглядит`, `Для`, `Добро`, `Если`, `Задачи`, `Знакомство`, `Или`, `Их`) — ни одного личного имени.
+
+Подтверждены **две независимые failure modes** одновременно:
+
+- `generic_chunk_dominance` — TF-IDF взял `pb_raw_05` (Введение, короткий generic prose) поверх любого specific chunk.
+- `lexical_pattern_overmatch` — capitalized-token regex match'ит начала предложений после точки, любую заглавную лексическую единицу. fit_check включён, но настолько широк, что отказа не происходит при отсутствии answer-bearing material.
+
+Эти две failure modes не рефайнменты друг друга — они независимы. На Q7 они сработали одновременно. На false-hits из §1 (Q6, Q9, Q13, Q16, Q20, Q29, Q34) сработала первая в одиночку, потому что для их intent'ов (`what`/`why`/`how`) fit_check skipped и второй некуда было сработать.
+
+**Импликация для приоритезации работы (refinement of TODO #3 в §4):** расширение fit_check на skipped intent'ы без аудита текущих regex'ов на over-match даст false comfort. `who` regex был включён и не отказал — то же самое произойдёт с наивно реализованными `what`/`why`/`how` regex'ами. Аудит уже написанных правил — pre-requisite, не co-task.
+
+**Связь с paraphrased pilot.** Q7 audit row (написана на paraphrased chunks другой инстанцией) предсказывала ambiguity и отсутствие authorship relation как причину для refuse. Raw retrieval это **подтверждает** через конкретную failure path: regex over-match. Audit row из синтетической эпохи проекта оказалась predictive по отношению к raw data — первое замыкание цикла «audit-as-language → empirical-event» на проекте.

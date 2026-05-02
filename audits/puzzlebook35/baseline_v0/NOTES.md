@@ -96,3 +96,42 @@ Q7 (`who`/ambiguous) при baseline retrieval v0 на raw chunks дал `match 
 **Импликация для приоритезации работы (refinement of TODO #3 в §4):** расширение fit_check на skipped intent'ы без аудита текущих regex'ов на over-match даст false comfort. `who` regex был включён и не отказал — то же самое произойдёт с наивно реализованными `what`/`why`/`how` regex'ами. Аудит уже написанных правил — pre-requisite, не co-task.
 
 **Связь с paraphrased pilot.** Q7 audit row (написана на paraphrased chunks другой инстанцией) предсказывала ambiguity и отсутствие authorship relation как причину для refuse. Raw retrieval это **подтверждает** через конкретную failure path: regex over-match. Audit row из синтетической эпохи проекта оказалась predictive по отношению к raw data — первое замыкание цикла «audit-as-language → empirical-event» на проекте.
+
+## 6. Q2 на raw данных — Q-known-hit confirmation, gold + decoys предсказаны точно
+
+Q2 (`Какие два внешних Python-модуля устанавливаются через pip согласно подготовке среды?`, `intent=what`, `pilot_role=Q-known-hit`) был написан как trivial case: ожидался clean hit на единственном chunk'е, содержащем оба имени модулей.
+
+**Эмпирическое сопоставление с audit row на raw chunks:**
+
+| предсказание audit row | проверка на raw | результат |
+|---|---|---|
+| gold = chunk с обоими именами `pygame` AND `PythonTurtle` | uniqueness check по corpus | **`pb_raw_09`** ("Внешние библиотеки Python") — единственный такой chunk в pp.12-38 ✓ |
+| gold должен попасть в top-1 retrieval | v0 (TF-IDF), v1 (BM25) | **оба** поставили `pb_raw_09` в top-1 ✓ |
+| forbidden_evidence pattern: «mentions of pip in install context without naming both specific modules» | uniqueness check по corpus | **`pb_raw_07`** ("Установка Python") — содержит `pip` без модулей, точно по паттерну ✓ |
+| decoy chunk должен появиться в top-k как noise | v0, v1 top-k | оба retrievals поставили `pb_raw_07` в top-3 ✓ |
+
+**Что подтвердилось:**
+
+1. **Gold prediction.** Audit row предсказывал, что в корпусе существует уникальный chunk с relation+оба имени. На raw данных это true: только `pb_raw_09` содержит pair `(pygame, PythonTurtle)`. Никакой другой chunk не deserves gold по типизированным критериям audit row.
+
+2. **Forbidden_evidence pattern preservation.** Audit row перечислил конкретные decoy patterns со ссылками на paraphrased chunks (`pb_intro_004`, `pb_intro_007`). На raw данных эти patterns воспроизводятся: `pb_raw_07` содержит ровно те самые `pip` install-mentions без module names. **Mapping paraphrased decoy → raw decoy preserved**: `pb_intro_004` ↔ `pb_raw_07` по типу noise.
+
+3. **Retrieval поведение для Q-known-hit стабильно.** Когда вопрос имеет gold с unambiguous typed evidence, оба lexical retrieval методов (TF-IDF и BM25) возвращают gold top-1. `generic_chunk_dominance` failure mode здесь не срабатывает потому, что gold chunk сам имеет высокую specific vocabulary overlap с вопросом (`pygame`, `pythonturtle`, `pip`, `модул`, `установ` — не generic).
+
+**Что Q2 confirmation даёт сверх Q22 и Q7:**
+
+Q22 confirmation был about machine-verifiable check survival (year-regex). Q7 confirmation — about failure mode survival (regex over-match, chunk dominance). **Q2 — about positive case survival**: trivial well-formed audit row остаётся trivially correct после смены corpus material. Это базовый sanity property, без которого любые отрицательные подтверждения (Q22, Q7) не имели бы основания — мы бы не знали, что framework способен на корректные предсказания вообще.
+
+**Audit row metadata refinement (recorded, not applied).** Q2 row написана с `audit_confidence: medium` потому, что rater also constructed questions/run AND chunks were paraphrased. Raw confirmation удаляет вторую часть caveat'а (chunks теперь real). Любая будущая re-labeling может рассматривать Q2 audit_confidence как retrospectively upgradable до `high` — но это meta-update, не unilateral.
+
+**Замыкание цикла, теперь по трём rows.**
+
+| qid | audit row prediction | raw confirmation |
+|---|---|---|
+| Q22 (`not_in_corpus_test`) | year-regex refuses on numeric noise | ✓ ASCII codes 80/114/111 в pb_raw_26 не match'ятся; fit_refuse корректен на двух retrievals |
+| Q7 (`ambiguity_test`) | ambiguity → over-match на capitalized noise | ✓ 10 false names matched, lexical_pattern_overmatch failure mode эмпирически подтверждён |
+| Q2 (`Q-known-hit`) | gold = single chunk с обоими module names; forbidden = pip-only decoys | ✓ pb_raw_09 unique gold, pb_raw_07 decoy в top-3 как предсказано |
+
+Все три pilot audit rows, написанные на synthetic paraphrased data, **сохранили predictive power** на real raw data. Это первый эмпирический сигнал, что **audit JSONL как «язык, на котором ThoughtState говорит о своих провалах» (RVP §0) переносится между corpus realizations**, а не привязан к конкретным paraphrased chunk_id namespaces.
+
+Это не означает, что любая будущая audit row будет переноситься так же. Но три из трёх — non-trivial baseline для следующего pilot'а.

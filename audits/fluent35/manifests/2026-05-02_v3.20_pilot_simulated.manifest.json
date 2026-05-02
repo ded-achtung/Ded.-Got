@@ -1,0 +1,21 @@
+{
+  "run_id": "2026-05-02_v3.20_pilot_simulated",
+  "system_version": "v3.20-simulated",
+  "git_commit": "n/a-simulated-pilot",
+  "benchmark": "fluent35",
+  "corpus": "fluent_python_ch1_2",
+  "chunking_version": "fluent_pdf_chunks_v1_illustrative",
+  "retrieval_top_k": 10,
+  "downstream_effective_k": 4,
+  "features": {
+    "probe_v0": true,
+    "question_fit_v0": true,
+    "intent_conditioned_retrieval": false,
+    "episode_lite": false
+  },
+  "simulated": true,
+  "simulation_notes": "Run JSONL was constructed by hand for pilot test of audit format, not produced by a real retrieval system. Chunks_subset is a paraphrased illustrative reconstruction of Fluent Python ch1-2 fragments, not extracted from the real PDF. Use this manifest only to validate that audit_v0 schema and pilot protocol work end-to-end. Do not use these numbers in any report or gate decision.",
+  "rater": "claude-opus-4-7",
+  "rater_type": "llm_single_rater",
+  "notes": "Pilot v0.2.1 — Q-known-hit only. Q22 and Q7 deferred until either real run data is available, or scope of synthetic test bed is expanded explicitly."
+}

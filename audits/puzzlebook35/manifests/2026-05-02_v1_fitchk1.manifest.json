@@ -1,0 +1,62 @@
+{
+  "corpus": {
+    "chunks_path": "audits/puzzlebook35/corpus/puzzlebook_raw_chunks_v1.jsonl",
+    "chunks_sha256": "3066756d507cba56c9cca3b1a54aeafcd5082307305f612e6a6b8655afe8d0c8"
+  },
+  "experiment": {
+    "changed": "fit_check policy (v0 bare regex → v1 hybrid)",
+    "fixed": "retrieval (inherited from upstream_run); chunks; questions; fit_check downstream_k"
+  },
+  "fit_check": {
+    "approach": "trigger_windows (A) + alignment_floor + section_path_gate (minimal B)",
+    "design_doc": "audits/puzzlebook35/baseline_v0/FITCHECK_V1_DESIGN.md",
+    "downstream_effective_k": 4,
+    "intents_handled": [
+      "when",
+      "who",
+      "how_many",
+      "what",
+      "why",
+      "how"
+    ],
+    "version": "v1_hybrid"
+  },
+  "generated_at_utc": "2026-05-02T03:50:21Z",
+  "questions_source": {
+    "count": 35,
+    "path": "audits/puzzlebook35/audit_v0.questions.jsonl",
+    "sha256": "e38ab4ca7ae0ace843ce7491412b0f1976837fa50d6349cae273df0d8b6bdf3c"
+  },
+  "run": {
+    "fit_status_distribution": {
+      "match": 30,
+      "mismatch": 5,
+      "partial": 0,
+      "skipped": 0
+    },
+    "outcomes": {
+      "fit_refuse": 5,
+      "given_up": 0,
+      "hit": 30
+    },
+    "path": "audits/puzzlebook35/runs/2026-05-02_v1_fitchk1.jsonl",
+    "row_count": 35,
+    "sha256": "bb4e1d6b2f085d9fd045f493a210acc74e0eda76d1d3a11d71d61beb12d9c10b"
+  },
+  "run_date": "2026-05-02",
+  "run_id": "2026-05-02_v1_fitchk1",
+  "simulated": false,
+  "upstream_run": {
+    "label": "v1_bm25",
+    "path": "audits/puzzlebook35/runs/2026-05-02_v1_bm25.jsonl",
+    "sha256": "586194e5a9aa2ed60975b53062fc2bafb71f9e3e5945311db720585d9698c5fd"
+  },
+  "what_is_real_vs_constructed": {
+    "audit_labels": "n/a — no audit rows produced here",
+    "chunk_content": "REAL — direct PDF extraction (inherited)",
+    "chunk_ids_and_boundaries": "DETERMINISTIC (inherited)",
+    "corpus_pages": "REAL (inherited)",
+    "questions": "INHERITED from puzzlebook35 audit_v0.questions.jsonl",
+    "runtime_metrics_jsonl": "REAL — v1_bm25 retrieval × fit_check v1"
+  }
+}

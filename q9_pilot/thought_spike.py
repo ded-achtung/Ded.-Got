@@ -35,6 +35,26 @@ class ThoughtState:
 
 # ---------------- regexes used during update ----------------
 
+# pattern_class registry — narrow enum derived empirically from Q22+Q7.
+# is_disambiguating=False means the class supports multiple competing H
+# symmetrically; such entries give no direct H contribution and instead
+# emit un_disambiguating tension. Each class also defines its base
+# support_strength (used by revise_hypotheses for first-instance contrib).
+PATTERN_CLASSES = {
+    # when-intent
+    "raw_year_in_prose":    {"is_disambiguating": True,  "support_strength": 0.20},
+    "year_in_python_version": {"is_disambiguating": True, "support_strength": 0.10},
+    "numeric_off_topic":    {"is_disambiguating": True,  "support_strength": 0.10},
+    # who-intent
+    "name_with_relation":   {"is_disambiguating": True,  "support_strength": 0.20},
+    "name_in_url":          {"is_disambiguating": False, "support_strength": 0.10},
+    "anonymous_attribution": {"is_disambiguating": False, "support_strength": 0.10},
+    "publisher_org":        {"is_disambiguating": True,  "support_strength": 0.10},
+    # both intents
+    "no_marker":            {"is_disambiguating": True,  "support_strength": 0.10},
+}
+
+
 YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 PYTHON_VERSION_RE = re.compile(
     r"\bPython[\s\-]?(\d+(?:\.\d+)+)\b", re.IGNORECASE
@@ -117,7 +137,7 @@ def _update_when(state: "ThoughtState", obs: dict) -> list:
                     "finding": (f"date-shaped token '{y_str}' inside Python "
                                 f"version — would have supported "
                                 f"{candidate_hyps} if real, type-rejected"),
-                    "evidence_verdict": "rejected_type_mismatch",
+                    "evidence_verdict": "rejected_type_mismatch", "pattern_class": "year_in_python_version",
                     "links_to_Ex": False,
                     "supports_H": [no_answer] if no_answer else [],
                     "weakens_H": [],
@@ -130,6 +150,7 @@ def _update_when(state: "ThoughtState", obs: dict) -> list:
                     "finding": f"raw year '{y}' in prose context — candidate",
                     "value": y,
                     "evidence_verdict": "candidate",
+                    "pattern_class": "raw_year_in_prose",
                     "links_to_Ex": True,
                     "supports_H": candidate_hyps,
                     "weakens_H": [no_answer] if no_answer else [],
@@ -144,6 +165,7 @@ def _update_when(state: "ThoughtState", obs: dict) -> list:
                         f"with Ex.type=date — these are decoys for "
                         f"{candidate_hyps}"),
             "evidence_verdict": "off_topic",
+            "pattern_class": "numeric_off_topic",
             "links_to_Ex": False,
             "supports_H": [no_answer] if no_answer else [],
             "weakens_H": candidate_hyps,
@@ -161,6 +183,7 @@ def _update_when(state: "ThoughtState", obs: dict) -> list:
             "finding": (f"no date markers; topic={_sniff_topic(text)}; "
                         f"{note}"),
             "evidence_verdict": verdict,
+            "pattern_class": "no_marker",
             "links_to_Ex": False,
             "supports_H": [no_answer] if no_answer else [],
             "weakens_H": candidate_hyps,
@@ -209,6 +232,7 @@ def _update_who(state: "ThoughtState", obs: dict) -> list:
                              "the work, could be just a username; "
                              "ambiguous, splits support"),
                 "evidence_verdict": "weak_candidate",
+                "pattern_class": "name_in_url",
                 "links_to_Ex": False,
                 "supports_H": [h_single, no_answer] if (h_single and no_answer) else [],
                 "weakens_H": [],
@@ -230,6 +254,7 @@ def _update_who(state: "ThoughtState", obs: dict) -> list:
                 "finding": (f"'{kw_m.group(0)}' followed by named entity "
                              f"'{cyr_name.group(0)}' — explicit attribution"),
                 "evidence_verdict": "candidate",
+                "pattern_class": "name_with_relation",
                 "links_to_Ex": True,
                 "supports_H": [h_single] if h_single else [],
                 "weakens_H": [no_answer] if no_answer else [],
@@ -237,15 +262,18 @@ def _update_who(state: "ThoughtState", obs: dict) -> list:
             })
         else:
             # Anonymous self-reference: 'автор' without follow-up name
+            # Treated as symmetric: 'an author entity exists' (h_single)
+            # but 'unnamed in this corpus' (no_answer). Non-disambiguating.
             new.append({
                 "from": cid,
                 "finding": (f"'{kw_m.group(0)}' present but no named entity "
                              "follows — anonymous self-reference; suggests "
                              "an author entity exists somewhere but unnamed"),
                 "evidence_verdict": "weak_candidate",
+                "pattern_class": "anonymous_attribution",
                 "links_to_Ex": False,
-                "supports_H": [h_single] if h_single else [],
-                "weakens_H": [no_answer] if no_answer else [],
+                "supports_H": [h_single, no_answer] if (h_single and no_answer) else [],
+                "weakens_H": [],
                 "opposes_H": [],
             })
 
@@ -265,6 +293,7 @@ def _update_who(state: "ThoughtState", obs: dict) -> list:
                              "context — publishing is not authoring; "
                              "Ex.forbidden hit"),
                 "evidence_verdict": "off_topic",
+                "pattern_class": "publisher_org",
                 "links_to_Ex": False,
                 "supports_H": [no_answer] if no_answer else [],
                 "weakens_H": candidate_hyps,
@@ -284,6 +313,7 @@ def _update_who(state: "ThoughtState", obs: dict) -> list:
             "finding": (f"no name, no author keyword; "
                         f"topic={_sniff_topic(text)}; {note}"),
             "evidence_verdict": verdict,
+            "pattern_class": "no_marker",
             "links_to_Ex": False,
             "supports_H": [no_answer] if no_answer else [],
             "weakens_H": candidate_hyps,
@@ -335,76 +365,82 @@ def _sniff_topic(text: str) -> str:
 # ---------------- revise_hypotheses ----------------
 
 def revise_hypotheses(state: "ThoughtState") -> list:
-    """Pure-K target weight: weight is a function of K and the immutable
-    base weight (set in initial_state). Inner-loop iterations therefore
-    converge: same K -> same target, no compounding offsets.
+    """Pattern-class aware aggregation. Same-class repetition produces
+    diminishing returns for candidate H (1.0, 0.3, 0.1, 0.0). For the
+    no_answer H, support stays linear: each additional empty chunk is
+    additional evidence the corpus doesn't contain the answer.
 
-    Status reads T (convergence -> non-leader fading) and the step's
-    *initial* weight (state.H[i]['_step_initial']) so the growing/weakening
-    tag reflects movement-this-step, not movement-this-iter.
-    """
+    Non-disambiguating classes (e.g., name_in_url, anonymous_attribution
+    on Q7) contribute ZERO directly to any H — they only generate
+    un_disambiguating tension via recompute_tensions.
+
+    Weakening from candidate-weakens stays linear (each new "no
+    answer here" makes the candidate less plausible)."""
+    from collections import defaultdict
     H = state.H
     K = state.K
     T = state.T
     convergence_active = any(t["kind"] == "convergence" for t in T)
     leader_id = _leader_id(H)
 
+    def _dim_candidate(n: int) -> float:
+        if n <= 0: return 0.0
+        if n == 1: return 1.0
+        if n == 2: return 0.3
+        if n == 3: return 0.1
+        return 0.0
+
     out = []
     for h in H:
         hid = h["id"]
         base = h.get("_base", h["weight"])
         step_initial = h.get("_step_initial", h["weight"])
+        is_no_answer = h.get("_role") == "no_answer"
 
-        supports_real = sum(
-            1 for k in K
-            if hid in k.get("supports_H", [])
-            and k.get("evidence_verdict") == "candidate"
-        )
-        supports_indirect = sum(
-            1 for k in K
-            if hid in k.get("supports_H", [])
-            and k.get("evidence_verdict") in (
-                "absent_extending_gap", "absent_confirming_leader",
-                "off_topic", "rejected_type_mismatch",
-            )
-        )
-        supports_weak = sum(
-            1 for k in K
-            if hid in k.get("supports_H", [])
-            and k.get("evidence_verdict") == "weak_candidate"
-        )
-        weakened = sum(1 for k in K if hid in k.get("weakens_H", []))
+        support_classes: dict[str, int] = defaultdict(int)
+        weaken_classes: dict[str, int] = defaultdict(int)
+        for k in K:
+            klass = k.get("pattern_class", "_unknown")
+            class_meta = PATTERN_CLASSES.get(klass, {"is_disambiguating": True,
+                                                       "support_strength": 0.10})
+            if hid in k.get("supports_H", []):
+                if class_meta.get("is_disambiguating", True):
+                    support_classes[klass] += 1
+                # non-disambiguating: skip; surfaces in T instead
+            if hid in k.get("weakens_H", []):
+                weaken_classes[klass] += 1
+
+        # Support contribution
+        support = 0.0
+        for klass, n in support_classes.items():
+            strength = PATTERN_CLASSES.get(klass, {}).get("support_strength", 0.10)
+            if is_no_answer:
+                support += strength * n   # linear: each new empty chunk adds
+            else:
+                support += strength * _dim_candidate(n)   # diminishing
+
+        # Weakening: linear for candidates, irrelevant for no_answer
+        weaken = 0.0 if is_no_answer else sum(0.05 * n for n in weaken_classes.values())
+
+        # opposed (kept for backward-compat with verdict 'candidate'
+        # which sets opposes_H = [no_answer])
         opposed = sum(1 for k in K if hid in k.get("opposes_H", []))
+        oppose_pull = 0.10 * opposed
 
-        if h.get("_role") == "no_answer":
-            # 'no answer' grows from indirect signal AND from weak split
-            # support; shrinks from real candidates that succeed
-            target = max(0.0, min(1.0,
-                base
-                + 0.10 * supports_indirect
-                + 0.05 * supports_weak
-                - 0.25 * supports_real,
-            ))
-        else:
-            # candidate hypotheses grow from real evidence; partial
-            # credit for weak signals (split-supporting URL names,
-            # anonymous author keywords)
-            target = max(0.0, min(1.0,
-                base
-                + 0.20 * supports_real
-                + 0.10 * supports_weak
-                - 0.05 * weakened
-                - 0.05 * opposed,
-            ))
+        target = max(0.0, min(1.0,
+            base + support - weaken - (oppose_pull if is_no_answer else 0),
+        ))
 
-        # status: against step_initial (preserved across inner iters)
+        # status
         if convergence_active and hid != leader_id:
             status = "fading"
         elif target > step_initial + 0.005:
             status = "growing"
         elif target < step_initial - 0.005:
             status = "weakening"
-        elif weakened >= 1 and supports_real >= 1:
+        elif (weaken_classes and any(
+                hid in k.get("supports_H", []) and k.get("evidence_verdict") == "candidate"
+                for k in K)):
             status = "disputed"
         else:
             status = "stable"
@@ -437,6 +473,26 @@ def recompute_tensions(state: "ThoughtState") -> list:
             "what": (f"Ex.must_link_to {Ex.get('must_link_to')} unsatisfied "
                      f"after {len(K)} observations"),
             "severity": "HIGH" if len(K) >= 3 else "MEDIUM",
+        })
+
+    # un_disambiguating: each non-disambiguating pattern_class present
+    # in K becomes its own tension, recording which H it would have
+    # supported symmetrically. Deduplicated by class+H-set.
+    from collections import defaultdict
+    non_dis: dict[str, set] = defaultdict(set)
+    for k in K:
+        klass = k.get("pattern_class", "")
+        if not PATTERN_CLASSES.get(klass, {}).get("is_disambiguating", True):
+            non_dis[klass].update(k.get("supports_H", []))
+    for klass, h_set in non_dis.items():
+        T.append({
+            "kind": "un_disambiguating",
+            "what": (f"pattern_class '{klass}' supports {sorted(h_set)} "
+                      "symmetrically — no direct H contribution; "
+                      "ambiguity recorded as tension"),
+            "severity": "MEDIUM",
+            "klass": klass,
+            "between": sorted(h_set),
         })
 
     rejects = [k for k in K

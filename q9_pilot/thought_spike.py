@@ -50,6 +50,10 @@ PATTERN_CLASSES = {
     "name_in_url":          {"is_disambiguating": False, "support_strength": 0.10},
     "anonymous_attribution": {"is_disambiguating": False, "support_strength": 0.10},
     "publisher_org":        {"is_disambiguating": True,  "support_strength": 0.10},
+    # what-intent (Q1 — version question)
+    "version_with_min_phrase": {"is_disambiguating": True,  "support_strength": 0.20},
+    "versioned_command":       {"is_disambiguating": True,  "support_strength": 0.15},
+    "python3_command":         {"is_disambiguating": False, "support_strength": 0.10},
     # both intents
     "no_marker":            {"is_disambiguating": True,  "support_strength": 0.10},
 }
@@ -77,6 +81,18 @@ AUTHOR_KW_RE = re.compile(
     re.IGNORECASE,
 )
 
+# what-intent regexes (Q1: minimum Python version)
+VERSION_MIN_PHRASE_RE = re.compile(
+    r"(?:версию\s+Python\s+не\s+ниже\s+|"
+     r"Python\s+(?:версии\s+)?не\s+ниже\s+|"
+     r"требуется\s+Python\s+|"
+     r"минимум\s+Python\s+)"
+    r"(\d+(?:\.\d+)+)",
+    re.IGNORECASE,
+)
+VERSIONED_CMD_RE = re.compile(r"\bpython(\d+\.\d+)\b")
+PYTHON3_CMD_RE = re.compile(r"\bpython3\b(?!\.\d)")
+
 
 # ---------------- update_knowledge (dispatch on intent) ----------------
 
@@ -89,6 +105,8 @@ def update_knowledge(state: "ThoughtState", obs: dict) -> list:
         return _update_when(state, obs)
     if intent == "who":
         return _update_who(state, obs)
+    if intent == "what":
+        return _update_what(state, obs)
     return state.K + [{
         "from": obs.get("id", "?"),
         "finding": f"no extractor for intent={intent}",
@@ -312,6 +330,95 @@ def _update_who(state: "ThoughtState", obs: dict) -> list:
             "from": cid,
             "finding": (f"no name, no author keyword; "
                         f"topic={_sniff_topic(text)}; {note}"),
+            "evidence_verdict": verdict,
+            "pattern_class": "no_marker",
+            "links_to_Ex": False,
+            "supports_H": [no_answer] if no_answer else [],
+            "weakens_H": candidate_hyps,
+            "opposes_H": [],
+        })
+
+    return state.K + new
+
+
+def _update_what(state: "ThoughtState", obs: dict) -> list:
+    """Q1-class extractor: minimum Python version. Multiple K entries
+    can be produced from one chunk (a chunk may contain a min-version
+    phrase AND versioned commands AND a generic python3 command — each
+    is a distinct piece of evidence with its own pattern_class)."""
+    text = obs.get("text", "")
+    cid = obs.get("id", "?")
+    H = state.H
+    leader = max(H, key=lambda h: h["weight"]) if H else None
+    leader_id = leader["id"] if leader else None
+    convergence_active = any(t["kind"] == "convergence" for t in state.T)
+    no_answer = _no_answer_id(H)
+    candidate_hyps = _candidate_ids(H)
+    h_specific = candidate_hyps[0] if candidate_hyps else None
+    h_general = candidate_hyps[1] if len(candidate_hyps) > 1 else None
+
+    new = []
+
+    # 1) Explicit minimum-version phrase ("версию Python не ниже 3.10")
+    for m in VERSION_MIN_PHRASE_RE.finditer(text):
+        new.append({
+            "from": cid,
+            "verbatim": m.group(0),
+            "value": m.group(1),
+            "finding": (f"explicit minimum-version phrase: "
+                        f"'{m.group(0).strip()}' -> {m.group(1)}"),
+            "evidence_verdict": "candidate",
+            "pattern_class": "version_with_min_phrase",
+            "links_to_Ex": True,
+            "supports_H": [h_specific] if h_specific else [],
+            "weakens_H": [h_general, no_answer] if (h_general and no_answer) else [],
+            "opposes_H": [no_answer] if no_answer else [],
+        })
+
+    # 2) Versioned command (pythonN.M)
+    for m in VERSIONED_CMD_RE.finditer(text):
+        new.append({
+            "from": cid,
+            "verbatim": m.group(0),
+            "value": m.group(1),
+            "finding": (f"versioned python command: '{m.group(0)}' "
+                        f"-> minor {m.group(1)}"),
+            "evidence_verdict": "candidate",
+            "pattern_class": "versioned_command",
+            "links_to_Ex": True,
+            "supports_H": [h_specific] if h_specific else [],
+            "weakens_H": [no_answer] if no_answer else [],
+            "opposes_H": [no_answer] if no_answer else [],
+        })
+
+    # 3) Generic python3 command (no minor) — symmetric between
+    #    h_specific and h_general
+    for m in PYTHON3_CMD_RE.finditer(text):
+        new.append({
+            "from": cid,
+            "verbatim": m.group(0),
+            "finding": (f"generic 'python3' command: '{m.group(0)}' "
+                        "— constrains to Python 3.x but not specific minor"),
+            "evidence_verdict": "weak_candidate",
+            "pattern_class": "python3_command",
+            "links_to_Ex": False,
+            "supports_H": [h_specific, h_general] if (h_specific and h_general) else [],
+            "weakens_H": [],
+            "opposes_H": [],
+        })
+
+    # 4) Fallback — chunk has none of the above
+    if not new:
+        if convergence_active and leader_id == no_answer:
+            verdict = "absent_confirming_leader"
+            note = f"another empty chunk after {no_answer} dominant"
+        else:
+            verdict = "absent_extending_gap"
+            note = "no version info found"
+        new.append({
+            "from": cid,
+            "finding": (f"no version markers; topic={_sniff_topic(text)}; "
+                        f"{note}"),
             "evidence_verdict": verdict,
             "pattern_class": "no_marker",
             "links_to_Ex": False,
@@ -659,12 +766,16 @@ def think_step(state: ThoughtState, obs: Any) -> ThoughtState:
     new_E = self_evaluate(state, work.K, work.H, work.T, obs)
     new_E["inner_iters"] = iters_run
 
+    # Capture ALL K entries added during this step (one chunk can produce
+    # multiple findings — Q1 step 1 produces 3 from pb_intro_004 alone).
+    new_in_this_step = work.K[len(state.K):]
     return ThoughtState(
         G=state.G, Ex=state.Ex,
         K=work.K, H=work.H, T=work.T, E=new_E,
         history=state.history + [{
             "obs_id": obs.get("id"),
             "K_size": len(work.K),
+            "K_added_this_step": new_in_this_step,
             "K_last": work.K[-1] if work.K else None,
             "K_relabelled_count": sum(
                 1 for k in work.K if k.get("_relabelled")
@@ -789,6 +900,57 @@ def initial_state_q7() -> ThoughtState:
     )
 
 
+# ---------------- initial_state for Q1 (no audit peeking) ----------------
+
+def initial_state_q1() -> ThoughtState:
+    """Q1 'Какую минимальную версию Python требует книга?' — first parse
+    without peeking at audit. Honest readings:
+
+      h1 (h_specific): book states a specific minor version (e.g. 3.10)
+      h2 (h_general):  book says Python 3 generally, no specific minor
+      h3 (no_answer):  no version requirement stated in active corpus
+
+    Q1 is a Q-known-hit candidate in RVP — chosen for the third spike
+    because it should have CORROBORATIVE evidence from different
+    pattern_classes pointing at the same answer. The spike does not
+    consult audit ground-truth; it tests whether the structure
+    (pattern_class + diminishing) handles corroboration cleanly."""
+    return ThoughtState(
+        G={
+            "intent": "what",
+            "target_entity": "minimum Python version",
+            "target_relation": "required by the book",
+            "question": "Какую минимальную версию Python требует книга?",
+        },
+        Ex={
+            "type": "version_number (X.Y form)",
+            "formats": ["X.Y", "X.Y.Z"],
+            "must_link_to": ["Python", "minimum/required/'не ниже'"],
+            "forbidden": [
+                "ISBN-shaped digits",
+                "year-shaped tokens (4-digit)",
+                "problem-data digits in code examples",
+            ],
+        },
+        H=[
+            {"id": "h1", "_role": "candidate",
+             "reading": "specific minor version stated (e.g. 3.10)",
+             "_base": 0.30, "weight": 0.30, "status": "stable"},
+            {"id": "h2", "_role": "candidate",
+             "reading": "Python 3 generally, no specific minor",
+             "_base": 0.30, "weight": 0.30, "status": "stable"},
+            {"id": "h3", "_role": "no_answer",
+             "reading": "no version requirement stated in active corpus",
+             "_base": 0.40, "weight": 0.40, "status": "stable"},
+        ],
+        K=[],
+        T=[],
+        E={"progress": 0.0, "kind": "initial",
+           "note": "before any observation"},
+        history=[],
+    )
+
+
 # ---------------- chunk fixtures (hand-copied from audit_v0.chunks.jsonl) ----------------
 # Order matches Q22 retrieved_topk_chunk_ids per audit_v0.manual.jsonl,
 # truncated to 5 chunks for the spike.
@@ -846,6 +1008,57 @@ CHUNKS = [
             "4) скачать и следовать инструкциям установщика, согласиться на "
             "установку pip. Проверка установки: команда python --version, "
             "либо python3 --version, либо python3.10 --version."
+        ),
+    },
+]
+
+
+# Q1 retrieve order (TF-IDF top-4): pb_intro_004 (0.24), pb_intro_006
+# (0.171), pb_intro_003 (0.148), pb_intro_005 (0.08).
+Q1_CHUNKS = [
+    {
+        "id": "pb_intro_004",
+        "text": (
+            "Инструкция по установке Python. Шаги: 1) зайти на python.org; "
+            "2) перейти в раздел Downloads; 3) выбрать установщик для своей "
+            "ОС (Windows, macOS или Linux) и версию Python не ниже 3.10; "
+            "4) скачать и следовать инструкциям установщика, согласиться на "
+            "установку pip. Проверка установки: команда python --version, "
+            "либо python3 --version, либо python3.10 --version."
+        ),
+    },
+    {
+        "id": "pb_intro_006",
+        "text": (
+            "В нескольких задачах используются внешние Python-библиотеки, "
+            "устанавливаемые через менеджер пакетов pip. Проверить наличие "
+            "pip: `python -m pip --version` (или python3 -m pip --version, "
+            "в соответствии с тем, как у пользователя называется python). "
+            "Используемые в книге внешние модули устанавливаются командами:"
+            "\n  python -m pip install pygame"
+            "\n  python -m pip install PythonTurtle"
+            "\nСсылка на документацию pip: docs.python.org/3/installing/"
+            "index.html."
+        ),
+    },
+    {
+        "id": "pb_intro_003",
+        "text": (
+            "Структура книги. Книга состоит из двух частей: «Серьезные "
+            "задачи» и «Шуточные задачи». В первой части — 50 (плюс "
+            "несколько дополнительных) задач, расположенных по нарастанию "
+            "сложности. Для решения задач необходимо владеть основами "
+            "Python: переменные, условные предложения, циклы, функции."
+        ),
+    },
+    {
+        "id": "pb_intro_005",
+        "text": (
+            "Рекомендованные редакторы кода для работы с книгой: IDLE "
+            "(входит в комплект поставки Python), Visual Studio Code "
+            "(code.visualstudio.com), PyCharm (jetbrains.com/pycharm). "
+            "Для книги подойдёт любой; для дальнейшего изучения Python "
+            "автор рекомендует более мощные IDE — VS Code или PyCharm."
         ),
     },
 ]
@@ -926,11 +1139,17 @@ def show(state: ThoughtState) -> None:
         relabel = step.get("K_relabelled_count", 0)
         print(f"--- step {i}: observed {step['obs_id']} "
               f"(inner_iters={iters}, K_relabelled={relabel}) ---")
-        kl = step["K_last"]
-        verdict = kl.get("evidence_verdict")
-        finding = kl.get("finding")
-        print(f"  noticed: {finding}")
-        print(f"  -> verdict: {verdict}")
+        added = step.get("K_added_this_step") or [step["K_last"]]
+        if len(added) > 1:
+            print(f"  noticed ({len(added)} findings):")
+            for k in added:
+                print(f"    [{k.get('pattern_class','?')}] "
+                      f"{k.get('finding','?')[:90]}")
+        else:
+            kl = step["K_last"]
+            print(f"  noticed: {kl.get('finding')}")
+            print(f"  -> verdict: {kl.get('evidence_verdict')} "
+                  f"(class={kl.get('pattern_class','?')})")
         print(f"  H now: " + ", ".join(
             f"{h['id']}={h['w']:.2f}/{h['s']}" for h in step["H"]))
         if step["T"]:
@@ -951,15 +1170,18 @@ def show(state: ThoughtState) -> None:
 if __name__ == "__main__":
     import sys
 
-    which = sys.argv[1] if len(sys.argv) > 1 else "q7"
+    which = sys.argv[1] if len(sys.argv) > 1 else "q1"
     if which == "q22":
         s = initial_state_q22()
         chunks = CHUNKS
     elif which == "q7":
         s = initial_state_q7()
         chunks = Q7_CHUNKS
+    elif which == "q1":
+        s = initial_state_q1()
+        chunks = Q1_CHUNKS
     else:
-        sys.exit(f"unknown question id: {which} (use q7 or q22)")
+        sys.exit(f"unknown question id: {which} (use q1, q7, or q22)")
 
     for chunk in chunks:
         s = think_step(s, chunk)

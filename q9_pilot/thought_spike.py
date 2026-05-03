@@ -54,6 +54,9 @@ PATTERN_CLASSES = {
     "version_with_min_phrase": {"is_disambiguating": True,  "support_strength": 0.20},
     "versioned_command":       {"is_disambiguating": True,  "support_strength": 0.15},
     "python3_command":         {"is_disambiguating": False, "support_strength": 0.10},
+    # what-intent (Q2 — pip modules question)
+    "pip_install_with_module": {"is_disambiguating": True,  "support_strength": 0.20},
+    "pip_mention_no_modules":  {"is_disambiguating": True,  "support_strength": 0.05},
     # both intents
     "no_marker":            {"is_disambiguating": True,  "support_strength": 0.10},
 }
@@ -93,20 +96,38 @@ VERSION_MIN_PHRASE_RE = re.compile(
 VERSIONED_CMD_RE = re.compile(r"\bpython(\d+\.\d+)\b")
 PYTHON3_CMD_RE = re.compile(r"\bpython3\b(?!\.\d)")
 
+# what-intent regexes (Q2: pip-installable modules)
+PIP_INSTALL_MODULE_RE = re.compile(
+    r"pip\s+install\s+([A-Za-z][A-Za-z0-9_]+)",
+    re.IGNORECASE,
+)
+PIP_MENTION_RE = re.compile(
+    r"\b(?:менеджер\s+пакетов\s+pip|"
+     r"установк[уи]\s+pip|"
+     r"наличие\s+pip|"
+     r"через\s+pip)\b",
+    re.IGNORECASE,
+)
+
 
 # ---------------- update_knowledge (dispatch on intent) ----------------
 
 def update_knowledge(state: "ThoughtState", obs: dict) -> list:
-    """Dispatch by G.intent. Each intent has its own pattern set, but
-    they all produce the same verdict vocabulary so revise_hypotheses
-    and recompute_tensions stay generic."""
-    intent = state.G.get("intent")
-    if intent == "when":
+    """Dispatch by G.extractor_pack (set in initial_state). Each pack is
+    a question-class-specific extractor; they share the verdict
+    vocabulary so revise_hypotheses and recompute_tensions stay generic.
+    Falls back to G.intent for backward compat."""
+    pack = state.G.get("extractor_pack") or state.G.get("intent")
+    if pack in ("when", "when_publication_date"):
         return _update_when(state, obs)
-    if intent == "who":
+    if pack in ("who", "who_authorship"):
         return _update_who(state, obs)
-    if intent == "what":
-        return _update_what(state, obs)
+    if pack in ("what_python_version",):
+        return _update_what_version(state, obs)
+    if pack == "what_pip_modules":
+        return _update_what_pip(state, obs)
+    if pack == "what":
+        return _update_what_version(state, obs)  # Q1 default
     return state.K + [{
         "from": obs.get("id", "?"),
         "finding": f"no extractor for intent={intent}",
@@ -341,7 +362,7 @@ def _update_who(state: "ThoughtState", obs: dict) -> list:
     return state.K + new
 
 
-def _update_what(state: "ThoughtState", obs: dict) -> list:
+def _update_what_version(state: "ThoughtState", obs: dict) -> list:
     """Q1-class extractor: minimum Python version. Multiple K entries
     can be produced from one chunk (a chunk may contain a min-version
     phrase AND versioned commands AND a generic python3 command — each
@@ -419,6 +440,79 @@ def _update_what(state: "ThoughtState", obs: dict) -> list:
             "from": cid,
             "finding": (f"no version markers; topic={_sniff_topic(text)}; "
                         f"{note}"),
+            "evidence_verdict": verdict,
+            "pattern_class": "no_marker",
+            "links_to_Ex": False,
+            "supports_H": [no_answer] if no_answer else [],
+            "weakens_H": candidate_hyps,
+            "opposes_H": [],
+        })
+
+    return state.K + new
+
+
+def _update_what_pip(state: "ThoughtState", obs: dict) -> list:
+    """Q2-class extractor: which two external Python modules are
+    pip-installed in setup. Each `pip install <name>` produces one
+    K entry (so a single chunk with two install commands yields two
+    K entries — same pattern_class). A bare `pip` mention without a
+    module name is a separate (much weaker) class.
+    """
+    text = obs.get("text", "")
+    cid = obs.get("id", "?")
+    H = state.H
+    leader = max(H, key=lambda h: h["weight"]) if H else None
+    leader_id = leader["id"] if leader else None
+    convergence_active = any(t["kind"] == "convergence" for t in state.T)
+    no_answer = _no_answer_id(H)
+    candidate_hyps = _candidate_ids(H)
+    h_pair = candidate_hyps[0] if candidate_hyps else None
+
+    new = []
+
+    # 1) `pip install <module>` — strong differentiating evidence
+    for m in PIP_INSTALL_MODULE_RE.finditer(text):
+        new.append({
+            "from": cid,
+            "verbatim": m.group(0),
+            "value": m.group(1),
+            "finding": (f"pip install command names module '{m.group(1)}' "
+                        "in setup context — direct candidate piece"),
+            "evidence_verdict": "candidate",
+            "pattern_class": "pip_install_with_module",
+            "links_to_Ex": True,
+            "supports_H": [h_pair] if h_pair else [],
+            "weakens_H": [no_answer] if no_answer else [],
+            "opposes_H": [no_answer] if no_answer else [],
+        })
+
+    # 2) Bare pip mention without specific module names — weak signal
+    #    that pip-context exists but no list yet
+    if not new and PIP_MENTION_RE.search(text):
+        new.append({
+            "from": cid,
+            "finding": ("pip mentioned in setup context but no module names "
+                        "given — corpus discusses pip but list isn't here"),
+            "evidence_verdict": "weak_candidate",
+            "pattern_class": "pip_mention_no_modules",
+            "links_to_Ex": False,
+            "supports_H": [],   # neither favors h1 nor h2 specifically
+            "weakens_H": [no_answer] if no_answer else [],
+            "opposes_H": [],
+        })
+
+    # 3) Fallback: nothing pip-related
+    if not new:
+        if convergence_active and leader_id == no_answer:
+            verdict = "absent_confirming_leader"
+            note = f"another empty chunk after {no_answer} dominant"
+        else:
+            verdict = "absent_extending_gap"
+            note = "no pip / module info found"
+        new.append({
+            "from": cid,
+            "finding": (f"no pip context, no module names; "
+                        f"topic={_sniff_topic(text)}; {note}"),
             "evidence_verdict": verdict,
             "pattern_class": "no_marker",
             "links_to_Ex": False,
@@ -818,6 +912,7 @@ def initial_state_q22() -> ThoughtState:
     return ThoughtState(
         G={
             "intent": "when",
+            "extractor_pack": "when_publication_date",
             "target_entity": "book 'Programming Puzzles, Python Edition'",
             "target_relation": "first publication date",
             "question": ("Когда была впервые выпущена книга "
@@ -867,6 +962,7 @@ def initial_state_q7() -> ThoughtState:
     return ThoughtState(
         G={
             "intent": "who",
+            "extractor_pack": "who_authorship",
             "target_entity": "tasks in the puzzle book",
             "target_relation": "authorship",
             "question": "Кто является автором задач в книге?",
@@ -918,6 +1014,7 @@ def initial_state_q1() -> ThoughtState:
     return ThoughtState(
         G={
             "intent": "what",
+            "extractor_pack": "what_python_version",
             "target_entity": "minimum Python version",
             "target_relation": "required by the book",
             "question": "Какую минимальную версию Python требует книга?",
@@ -949,6 +1046,120 @@ def initial_state_q1() -> ThoughtState:
            "note": "before any observation"},
         history=[],
     )
+
+
+# ---------------- initial_state for Q2 (no audit peeking) ----------------
+
+def initial_state_q2() -> ThoughtState:
+    """Q2 'Какие два внешних Python-модуля устанавливаются через pip
+    согласно подготовке среды?' — fourth spike target.
+
+    The question presupposes a specific pair exists; the system's
+    job is to find them. Honest readings:
+
+      h1: a specific named pair stated together in setup section
+      h2: multiple modules mentioned scattered across corpus
+          (no canonical pair / setup list)
+      h3: no answer present in active corpus
+
+    Plural-answer structure is new vs Q1/Q7/Q22 — each piece of the
+    pair is a separate K entry. Whether diminishing-per-class breaks
+    or holds for 'two pieces of one answer' is part of what this run
+    tests.
+    """
+    return ThoughtState(
+        G={
+            "intent": "what",
+            "extractor_pack": "what_pip_modules",
+            "target_entity": "pair of pip-installed external modules",
+            "target_relation": "named in setup section",
+            "question": ("Какие два внешних Python-модуля устанавливаются "
+                          "через pip согласно подготовке среды?"),
+        },
+        Ex={
+            "type": "pair of module names",
+            "formats": ["pip install X (twice)", "X и Y", "modules: X, Y"],
+            "must_link_to": ["pip context", "module names"],
+            "forbidden": [
+                "standard library names (os, sys, json, etc.)",
+                "IDE names (PyCharm, VS Code, IDLE)",
+                "task-specific function names",
+                "Python itself as 'module'",
+            ],
+        },
+        H=[
+            {"id": "h1", "_role": "candidate",
+             "reading": "specific named pair stated in setup section",
+             "_base": 0.35, "weight": 0.35, "status": "stable"},
+            {"id": "h2", "_role": "candidate",
+             "reading": "modules scattered across corpus, no canonical list",
+             "_base": 0.25, "weight": 0.25, "status": "stable"},
+            {"id": "h3", "_role": "no_answer",
+             "reading": "no answer present in active corpus",
+             "_base": 0.40, "weight": 0.40, "status": "stable"},
+        ],
+        K=[],
+        T=[],
+        E={"progress": 0.0, "kind": "initial",
+           "note": "before any observation"},
+        history=[],
+    )
+
+
+# Q2 retrieve order (TF-IDF top-4): pb_intro_006 (0.51), pb_intro_004
+# (0.173), pb_intro_007 (0.094), pb_t02_001 (0.063).
+Q2_CHUNKS = [
+    {
+        "id": "pb_intro_006",
+        "text": (
+            "В нескольких задачах используются внешние Python-библиотеки, "
+            "устанавливаемые через менеджер пакетов pip. Проверить наличие "
+            "pip: `python -m pip --version` (или python3 -m pip --version, "
+            "в соответствии с тем, как у пользователя называется python). "
+            "Используемые в книге внешние модули устанавливаются командами:"
+            "\n  python -m pip install pygame"
+            "\n  python -m pip install PythonTurtle"
+            "\nСсылка на документацию pip: docs.python.org/3/installing/"
+            "index.html."
+        ),
+    },
+    {
+        "id": "pb_intro_004",
+        "text": (
+            "Инструкция по установке Python. Шаги: 1) зайти на python.org; "
+            "2) перейти в раздел Downloads; 3) выбрать установщик для своей "
+            "ОС (Windows, macOS или Linux) и версию Python не ниже 3.10; "
+            "4) скачать и следовать инструкциям установщика, согласиться на "
+            "установку pip. Проверка установки: команда python --version, "
+            "либо python3 --version, либо python3.10 --version."
+        ),
+    },
+    {
+        "id": "pb_intro_007",
+        "text": (
+            "К книге прилагается git-репозиторий с заготовками кода и "
+            "решениями всех задач. Адрес репозитория: github.com/"
+            "MatWhiteside/python-puzzle-book. Клонирование: HTTPS — "
+            "`git clone https://github.com/MatWhiteside/python-puzzle-book"
+            ".git`; SSH — `git clone git@github.com:MatWhiteside/python-"
+            "puzzlebook.git`. Если git не работает или незнаком "
+            "пользователю, можно скачать код в виде zip-архива через "
+            "GitHub-браузер."
+        ),
+    },
+    {
+        "id": "pb_t02_001",
+        "text": (
+            "Задача 2. Определить функцию sum_if_less_than_fifty, "
+            "принимающую два параметра num_one и num_two (оба int). "
+            "Функция должна возвращать сумму, если она меньше 50, или "
+            "None, если сумма >= 50. Заготовка кода: "
+            "def sum_if_less_than_fifty(num_one: int, num_two: int) "
+            "-> int | None: # ваша реализация. "
+            "Примеры: 20+20=40 -> 40; 20+30=50 -> None."
+        ),
+    },
+]
 
 
 # ---------------- chunk fixtures (hand-copied from audit_v0.chunks.jsonl) ----------------
@@ -1180,8 +1391,11 @@ if __name__ == "__main__":
     elif which == "q1":
         s = initial_state_q1()
         chunks = Q1_CHUNKS
+    elif which == "q2":
+        s = initial_state_q2()
+        chunks = Q2_CHUNKS
     else:
-        sys.exit(f"unknown question id: {which} (use q1, q7, or q22)")
+        sys.exit(f"unknown question id: {which} (use q1, q2, q7, or q22)")
 
     for chunk in chunks:
         s = think_step(s, chunk)

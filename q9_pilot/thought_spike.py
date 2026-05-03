@@ -42,32 +42,62 @@ PYTHON_VERSION_RE = re.compile(
 ISBN_RE = re.compile(r"\b97[89][\-\d]{10,}\b")
 PATH_DIGIT_RE = re.compile(r"/\d+(?:/|\b)")
 
+# who-intent regexes
+URL_RE = re.compile(
+    r"(?:https?://[^\s`]+|github\.com[^\s`]+|[a-z]+\.com[^\s`/]*)",
+    re.IGNORECASE,
+)
+LATIN_CAMEL_RE = re.compile(r"\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b")
+NAME_CYR_RE = re.compile(
+    r"\b[А-ЯЁ][а-яё]{2,}(?:\s+[А-ЯЁ][а-яё]{2,})?\b"
+)
+ORG_CYR_RE = re.compile(r"\b[А-Я]{2,5}\s+[А-ЯЁ][а-яё]+\b")
+AUTHOR_KW_RE = re.compile(
+    r"\b(?:автор|написал[аи]?|составил[аи]?|написавш\w+|составивш\w+)\b",
+    re.IGNORECASE,
+)
 
-# ---------------- update_knowledge ----------------
+
+# ---------------- update_knowledge (dispatch on intent) ----------------
 
 def update_knowledge(state: "ThoughtState", obs: dict) -> list:
-    """Reads obs IN CONTEXT of state.H (current leader), state.T (open
-    tensions), state.K (prior accumulation). The verdict on a new entry,
-    and the H it weakens/supports, depends on what the system already
-    believes — not just on regex matches in obs.
+    """Dispatch by G.intent. Each intent has its own pattern set, but
+    they all produce the same verdict vocabulary so revise_hypotheses
+    and recompute_tensions stay generic."""
+    intent = state.G.get("intent")
+    if intent == "when":
+        return _update_when(state, obs)
+    if intent == "who":
+        return _update_who(state, obs)
+    return state.K + [{
+        "from": obs.get("id", "?"),
+        "finding": f"no extractor for intent={intent}",
+        "evidence_verdict": "absent_extending_gap",
+        "links_to_Ex": False,
+        "supports_H": [_no_answer_id(state.H)] if _no_answer_id(state.H) else [],
+        "weakens_H": _candidate_ids(state.H),
+        "opposes_H": [],
+    }]
 
-    Same regexes as before; what changed is that:
-      - absence weakens specific H by name (the ones that *expected*
-        evidence here), not just supports h4 generically
-      - the verdict label distinguishes 'absent_extending_gap' (early
-        absences before convergence) from 'absent_confirming_leader'
-        (absences after h4 already dominant) — same physical event,
-        different epistemic role
-      - type-rejection records *what* the rejected token would have
-        meant for *which* H if it weren't a decoy
-    """
+
+def _no_answer_id(H: list) -> str | None:
+    return next((h["id"] for h in H if h.get("_role") == "no_answer"), None)
+
+
+def _candidate_ids(H: list) -> list:
+    return [h["id"] for h in H if h.get("_role") != "no_answer"]
+
+
+def _update_when(state: "ThoughtState", obs: dict) -> list:
+    """Q22-class extractor: years, Python versions, URL paths."""
     text = obs.get("text", "")
     cid = obs.get("id", "?")
     H = state.H
     leader = max(H, key=lambda h: h["weight"]) if H else None
     leader_id = leader["id"] if leader else None
     convergence_active = any(t["kind"] == "convergence" for t in state.T)
-    candidate_hyps = [h["id"] for h in H if h["id"] != "h4"]
+    no_answer = _no_answer_id(H)
+    candidate_hyps = _candidate_ids(H)
 
     new = []
     years = YEAR_RE.findall(text)
@@ -89,8 +119,8 @@ def update_knowledge(state: "ThoughtState", obs: dict) -> list:
                                 f"{candidate_hyps} if real, type-rejected"),
                     "evidence_verdict": "rejected_type_mismatch",
                     "links_to_Ex": False,
-                    "supports_H": ["h4"],
-                    "weakens_H": [],   # rejection nudges h4 only, doesn't weaken candidates
+                    "supports_H": [no_answer] if no_answer else [],
+                    "weakens_H": [],
                     "opposes_H": [],
                 })
             else:
@@ -102,8 +132,8 @@ def update_knowledge(state: "ThoughtState", obs: dict) -> list:
                     "evidence_verdict": "candidate",
                     "links_to_Ex": True,
                     "supports_H": candidate_hyps,
-                    "weakens_H": ["h4"],   # candidate weakens out-of-corpus
-                    "opposes_H": ["h4"],
+                    "weakens_H": [no_answer] if no_answer else [],
+                    "opposes_H": [no_answer] if no_answer else [],
                 })
     elif py_versions or PATH_DIGIT_RE.search(text):
         marker = (f"Python version {py_versions[0]}" if py_versions
@@ -115,16 +145,14 @@ def update_knowledge(state: "ThoughtState", obs: dict) -> list:
                         f"{candidate_hyps}"),
             "evidence_verdict": "off_topic",
             "links_to_Ex": False,
-            "supports_H": ["h4"],
-            "weakens_H": candidate_hyps,   # off-topic numbers in chunk that
-                                            # COULD have held a date but didn't
+            "supports_H": [no_answer] if no_answer else [],
+            "weakens_H": candidate_hyps,
             "opposes_H": [],
         })
     else:
-        # absence: contextual verdict
-        if convergence_active and leader_id == "h4":
+        if convergence_active and leader_id == no_answer:
             verdict = "absent_confirming_leader"
-            note = "another empty chunk after h4 already dominant"
+            note = f"another empty chunk after {no_answer} already dominant"
         else:
             verdict = "absent_extending_gap"
             note = "expected date binding, none found"
@@ -134,10 +162,134 @@ def update_knowledge(state: "ThoughtState", obs: dict) -> list:
                         f"{note}"),
             "evidence_verdict": verdict,
             "links_to_Ex": False,
-            "supports_H": ["h4"],
+            "supports_H": [no_answer] if no_answer else [],
             "weakens_H": candidate_hyps,
             "opposes_H": [],
         })
+    return state.K + new
+
+
+def _update_who(state: "ThoughtState", obs: dict) -> list:
+    """Q7-class extractor: person names, author keywords, URL usernames,
+    publisher orgs. Verdict vocabulary kept compatible with revise/T:
+      - candidate          named author + verb in same chunk
+      - weak_candidate     author keyword without name; OR name in URL
+                            (split-supporting both 'has author' and
+                            'no real authorship statement')
+      - off_topic          publisher organization without authorship verb
+      - absent_*           nothing relevant
+    """
+    text = obs.get("text", "")
+    cid = obs.get("id", "?")
+    H = state.H
+    leader = max(H, key=lambda h: h["weight"]) if H else None
+    leader_id = leader["id"] if leader else None
+    convergence_active = any(t["kind"] == "convergence" for t in state.T)
+    no_answer = _no_answer_id(H)
+    candidate_hyps = _candidate_ids(H)
+    # for split-support: pick FIRST candidate as 'single-author' default
+    # this is the spike's honest minimal disambiguation — h1 by convention
+    # is the "single named author" hypothesis when constructing K entries
+    h_single = candidate_hyps[0] if candidate_hyps else None
+
+    new = []
+
+    # 1) URL containing a Latin CamelCase name
+    url_m = URL_RE.search(text)
+    if url_m:
+        url_span = url_m.group(0)
+        latin_in_url = LATIN_CAMEL_RE.search(url_span)
+        if latin_in_url:
+            name = latin_in_url.group(0)
+            new.append({
+                "from": cid,
+                "verbatim": name,
+                "finding": (f"name-shaped token '{name}' inside URL "
+                             f"({url_span[:50]}...) — could be author of "
+                             "the work, could be just a username; "
+                             "ambiguous, splits support"),
+                "evidence_verdict": "weak_candidate",
+                "links_to_Ex": False,
+                "supports_H": [h_single, no_answer] if (h_single and no_answer) else [],
+                "weakens_H": [],
+                "opposes_H": [],
+            })
+
+    # 2) Author keyword present
+    kw_m = AUTHOR_KW_RE.search(text)
+    if kw_m:
+        after = text[kw_m.end():kw_m.end() + 60]
+        cyr_name = NAME_CYR_RE.search(after)
+        if cyr_name and cyr_name.group(0).strip().lower() not in (
+            "программист", "разработчик", "автор", "пользоват",
+        ):
+            # Real candidate: keyword + Cyrillic name in proximity
+            new.append({
+                "from": cid,
+                "verbatim": cyr_name.group(0),
+                "finding": (f"'{kw_m.group(0)}' followed by named entity "
+                             f"'{cyr_name.group(0)}' — explicit attribution"),
+                "evidence_verdict": "candidate",
+                "links_to_Ex": True,
+                "supports_H": [h_single] if h_single else [],
+                "weakens_H": [no_answer] if no_answer else [],
+                "opposes_H": [no_answer] if no_answer else [],
+            })
+        else:
+            # Anonymous self-reference: 'автор' without follow-up name
+            new.append({
+                "from": cid,
+                "finding": (f"'{kw_m.group(0)}' present but no named entity "
+                             "follows — anonymous self-reference; suggests "
+                             "an author entity exists somewhere but unnamed"),
+                "evidence_verdict": "weak_candidate",
+                "links_to_Ex": False,
+                "supports_H": [h_single] if h_single else [],
+                "weakens_H": [no_answer] if no_answer else [],
+                "opposes_H": [],
+            })
+
+    # 3) Publisher organization (without authorship verb)
+    if not new:  # only if we didn't catch authorship above
+        org_m = ORG_CYR_RE.search(text)
+        publisher_context = (
+            "издательств" in text.lower()
+            or "пресс" in text.lower()
+            or "press" in text.lower()
+        )
+        if org_m and publisher_context:
+            new.append({
+                "from": cid,
+                "verbatim": org_m.group(0),
+                "finding": (f"organization '{org_m.group(0)}' in publisher "
+                             "context — publishing is not authoring; "
+                             "Ex.forbidden hit"),
+                "evidence_verdict": "off_topic",
+                "links_to_Ex": False,
+                "supports_H": [no_answer] if no_answer else [],
+                "weakens_H": candidate_hyps,
+                "opposes_H": [],
+            })
+
+    # 4) Fallback: nothing relevant found
+    if not new:
+        if convergence_active and leader_id == no_answer:
+            verdict = "absent_confirming_leader"
+            note = f"another empty chunk after {no_answer} dominant"
+        else:
+            verdict = "absent_extending_gap"
+            note = "no name, no author keyword"
+        new.append({
+            "from": cid,
+            "finding": (f"no name, no author keyword; "
+                        f"topic={_sniff_topic(text)}; {note}"),
+            "evidence_verdict": verdict,
+            "links_to_Ex": False,
+            "supports_H": [no_answer] if no_answer else [],
+            "weakens_H": candidate_hyps,
+            "opposes_H": [],
+        })
+
     return state.K + new
 
 
@@ -150,12 +302,13 @@ def reevaluate_existing_K(state: "ThoughtState") -> list:
     nothing arithmetically but reflects the entry's *current* role."""
     convergence_active = any(t["kind"] == "convergence" for t in state.T)
     leader = max(state.H, key=lambda h: h["weight"]) if state.H else None
-    leader_id = leader["id"] if leader else None
+    leader_is_no_answer = (leader is not None
+                            and leader.get("_role") == "no_answer")
 
     out = []
     for k in state.K:
         if (k.get("evidence_verdict") == "absent_extending_gap"
-                and convergence_active and leader_id == "h4"):
+                and convergence_active and leader_is_no_answer):
             out.append({**k, "evidence_verdict": "absent_confirming_leader",
                         "_relabelled": True})
         else:
@@ -215,16 +368,33 @@ def revise_hypotheses(state: "ThoughtState") -> list:
                 "off_topic", "rejected_type_mismatch",
             )
         )
+        supports_weak = sum(
+            1 for k in K
+            if hid in k.get("supports_H", [])
+            and k.get("evidence_verdict") == "weak_candidate"
+        )
         weakened = sum(1 for k in K if hid in k.get("weakens_H", []))
         opposed = sum(1 for k in K if hid in k.get("opposes_H", []))
 
-        if hid == "h4":
+        if h.get("_role") == "no_answer":
+            # 'no answer' grows from indirect signal AND from weak split
+            # support; shrinks from real candidates that succeed
             target = max(0.0, min(1.0,
-                base + 0.10 * supports_indirect - 0.25 * supports_real,
+                base
+                + 0.10 * supports_indirect
+                + 0.05 * supports_weak
+                - 0.25 * supports_real,
             ))
         else:
+            # candidate hypotheses grow from real evidence; partial
+            # credit for weak signals (split-supporting URL names,
+            # anonymous author keywords)
             target = max(0.0, min(1.0,
-                base + 0.20 * supports_real - 0.05 * weakened - 0.05 * opposed,
+                base
+                + 0.20 * supports_real
+                + 0.10 * supports_weak
+                - 0.05 * weakened
+                - 0.05 * opposed,
             ))
 
         # status: against step_initial (preserved across inner iters)
@@ -290,20 +460,21 @@ def recompute_tensions(state: "ThoughtState") -> list:
                 "severity": "INFORMATIONAL",
             })
 
-    # convergence: h4 dominant AND non-leaders fading
-    h4 = next((h for h in H if h["id"] == "h4"), None)
-    others = [h for h in H if h["id"] != "h4"]
-    if h4 and h4["weight"] >= 0.55:
+    # convergence: 'no_answer' role hypothesis dominant AND non-leaders fading
+    no_answer = next((h for h in H if h.get("_role") == "no_answer"), None)
+    others = [h for h in H if h.get("_role") != "no_answer"]
+    if no_answer and no_answer["weight"] >= 0.55:
         top_other = max(others, key=lambda h: h["weight"]) if others else None
-        margin = (h4["weight"] - top_other["weight"]) if top_other else 1.0
+        margin = (no_answer["weight"] - top_other["weight"]) if top_other else 1.0
         non_leader_fading = (
             all(h["status"] in ("fading", "weakening", "stable")
-                and h["weight"] < h4["weight"] for h in others)
+                and h["weight"] < no_answer["weight"] for h in others)
         )
         if margin >= 0.15 and non_leader_fading:
             T.append({
                 "kind": "convergence",
-                "what": (f"h4 weight {h4['weight']} dominates next "
+                "what": (f"{no_answer['id']} (no_answer) weight "
+                          f"{no_answer['weight']} dominates next "
                           f"({top_other['id']}: {top_other['weight']}) "
                           f"by margin {margin:.2f}; non-leaders fading"),
                 "severity": "RESOLVED",
@@ -325,9 +496,12 @@ def self_evaluate(prev: ThoughtState, K: list, H: list, T: list,
     closed = prev_T_kinds - cur_T_kinds
 
     if any(t["kind"] == "convergence" for t in T):
+        no_answer = next((h for h in H if h.get("_role") == "no_answer"), None)
+        leader_id = no_answer["id"] if no_answer else "?"
         return {"progress": 1.0, "kind": "convergence",
-                "note": "h4 dominant; refuse is the resolved answer, "
-                         "not a fallback when nothing else worked"}
+                "note": (f"{leader_id} (no_answer) dominant; refuse is the "
+                          "resolved answer, not a fallback when nothing "
+                          "else worked")}
 
     if new_K_count == 0:
         return {"progress": 0.0, "kind": "stagnant",
@@ -345,9 +519,11 @@ def self_evaluate(prev: ThoughtState, K: list, H: list, T: list,
                     "note": "type-rejection ruled out a decoy; "
                              "possibility space shrinks but I now know "
                              "more about what the answer is NOT"}
+        no_answer = next((h for h in H if h.get("_role") == "no_answer"), None)
+        no_answer_id = no_answer["id"] if no_answer else "?"
         return {"progress": round(h_shift, 3), "kind": "narrowing",
-                "note": f"K grew with verdict={verdict}; "
-                         "h4 nudges toward refuse"}
+                "note": (f"K grew with verdict={verdict}; "
+                          f"{no_answer_id} nudges toward refuse")}
 
     if opened:
         return {"progress": 0.3, "kind": "noticing",
@@ -454,8 +630,13 @@ def next_action(state: ThoughtState) -> str:
         (t for t in state.T if t["kind"] == "convergence"), None,
     )
     if convergence:
-        return ("refuse(reason=oop_signal_absent, "
-                f"backing_hypothesis=h4, weight={state.H[-1]['weight']})")
+        no_answer = next(
+            (h for h in state.H if h.get("_role") == "no_answer"), None,
+        )
+        if no_answer:
+            return (f"refuse(reason=oop_signal_absent, "
+                    f"backing_hypothesis={no_answer['id']}, "
+                    f"weight={no_answer['weight']})")
 
     severity_rank = {"HIGH": 3, "MEDIUM": 2, "INFORMATIONAL": 1, "RESOLVED": 0}
     if state.T:
@@ -466,7 +647,7 @@ def next_action(state: ThoughtState) -> str:
 
 # ---------------- initial_state for Q22 ----------------
 
-def initial_state() -> ThoughtState:
+def initial_state_q22() -> ThoughtState:
     return ThoughtState(
         G={
             "intent": "when",
@@ -483,19 +664,71 @@ def initial_state() -> ThoughtState:
                            "ISBN strings", "problem-data digits"],
         },
         H=[
-            {"id": "h1", "reading": "year of English original publication",
+            {"id": "h1", "_role": "candidate",
+             "reading": "year of English original publication",
              "_base": 0.30, "weight": 0.30, "status": "stable"},
-            {"id": "h2", "reading": "year of Russian translation",
+            {"id": "h2", "_role": "candidate",
+             "reading": "year of Russian translation",
              "_base": 0.25, "weight": 0.25, "status": "stable"},
-            {"id": "h3", "reading": "copyright year of an edition",
+            {"id": "h3", "_role": "candidate",
+             "reading": "copyright year of an edition",
              "_base": 0.20, "weight": 0.20, "status": "stable"},
-            {"id": "h4", "reading": "answer not present in active corpus",
+            {"id": "h4", "_role": "no_answer",
+             "reading": "answer not present in active corpus",
              "_base": 0.25, "weight": 0.25, "status": "stable"},
         ],
         K=[],
         T=[],
         E={"progress": 0.0, "kind": "initial",
             "note": "before any observation"},
+        history=[],
+    )
+
+
+# ---------------- initial_state for Q7 (no audit peeking) ----------------
+
+def initial_state_q7() -> ThoughtState:
+    """Honest first parse of 'Кто является автором задач в книге?' without
+    consulting audit's PI1/PI2/PI3/PI4 list. Three coarse readings a system
+    might come up with on its own:
+
+      h1 — 'one named individual wrote the tasks' (default for 'автор')
+      h2 — 'tasks are compiled from various sources' (puzzle books often
+            do this; particularly likely for problems that look classical)
+      h3 — 'no answer findable in this corpus'
+    """
+    return ThoughtState(
+        G={
+            "intent": "who",
+            "target_entity": "tasks in the puzzle book",
+            "target_relation": "authorship",
+            "question": "Кто является автором задач в книге?",
+        },
+        Ex={
+            "type": "person_name + authorship_relation",
+            "formats": ["X написал/составил Y", "автор: X"],
+            "must_link_to": ["named person", "authorship verb"],
+            "forbidden": [
+                "URL usernames (Latin CamelCase in github.com/X/...)",
+                "publisher organizations without authorship verb",
+                "anonymous 'автор' references that name no one",
+            ],
+        },
+        H=[
+            {"id": "h1", "_role": "candidate",
+             "reading": "tasks have a single named author",
+             "_base": 0.40, "weight": 0.40, "status": "stable"},
+            {"id": "h2", "_role": "candidate",
+             "reading": "tasks are compiled from various sources",
+             "_base": 0.25, "weight": 0.25, "status": "stable"},
+            {"id": "h3", "_role": "no_answer",
+             "reading": "answer not present in active corpus",
+             "_base": 0.35, "weight": 0.35, "status": "stable"},
+        ],
+        K=[],
+        T=[],
+        E={"progress": 0.0, "kind": "initial",
+           "note": "before any observation"},
         history=[],
     )
 
@@ -562,6 +795,66 @@ CHUNKS = [
 ]
 
 
+# Q7 retrieve order from audit_v0.manual.jsonl: pb_intro_007 first.
+Q7_CHUNKS = [
+    {
+        "id": "pb_intro_007",
+        "text": (
+            "К книге прилагается git-репозиторий с заготовками кода и "
+            "решениями всех задач. Адрес репозитория: github.com/"
+            "MatWhiteside/python-puzzle-book. Клонирование: HTTPS — "
+            "`git clone https://github.com/MatWhiteside/python-puzzle-book"
+            ".git`; SSH — `git clone git@github.com:MatWhiteside/python-"
+            "puzzlebook.git`. Если git не работает или незнаком "
+            "пользователю, можно скачать код в виде zip-архива через "
+            "GitHub-браузер."
+        ),
+    },
+    {
+        "id": "pb_intro_001",
+        "text": (
+            "Предисловие издательства ДМК Пресс. Контактные адреса для "
+            "отзывов (dmkpress@gmail.com, www.dmkpress.com), процедура "
+            "сообщения об опечатках, политика по нарушению авторских прав. "
+            "Не содержит технического материала."
+        ),
+    },
+    {
+        "id": "pb_intro_002",
+        "text": (
+            "Короткое приветствие читателю. Автор предлагает остановиться "
+            "на нескольких важных моментах перед погружением в задачи."
+        ),
+    },
+    {
+        "id": "pb_intro_011",
+        "text": (
+            "Введение к разделу серьёзных задач. Задачи начинаются с "
+            "лёгких и постепенно усложняются. В каждой задаче "
+            "формулируется задание и приводится заготовка кода. Если "
+            "задача не поддаётся, далее в книге есть раздел с указаниями "
+            "(рекомендуется обращаться к указаниям прежде, чем смотреть "
+            "решение). Важное правило: не импортировать никакие "
+            "библиотеки, если в задаче это явно не требуется."
+        ),
+    },
+    {
+        "id": "pb_intro_003",
+        "text": (
+            "Структура книги. Книга состоит из двух частей: «Серьезные "
+            "задачи» и «Шуточные задачи». В первой части — 50 (плюс "
+            "несколько дополнительных) задач, расположенных по нарастанию "
+            "сложности; рекомендуется начинать с задачи 1 и решать по "
+            "порядку, ничего не пропуская. Шуточные задачи требуют "
+            "творческих способностей и использования предлагаемых Python-"
+            "библиотек; их рекомендуется пробовать, когда читатель устанет "
+            "от серьёзных. Для решения задач необходимо владеть основами "
+            "Python: переменные, условные предложения, циклы, функции."
+        ),
+    },
+]
+
+
 # ---------------- pretty printer ----------------
 
 def show(state: ThoughtState) -> None:
@@ -569,7 +862,7 @@ def show(state: ThoughtState) -> None:
     print(f"=== Q: {g['question']} (intent={g['intent']}) ===")
     print(f"Ex: type={state.Ex['type']}, "
           f"forbidden={state.Ex['forbidden']}")
-    print(f"H initial: {[(h['id'], h['weight'], h['reading']) for h in state.H[:0] or initial_state().H]}")
+    print(f"H initial weights: {[(h['id'], h['_base'], h['_role'], h['reading']) for h in state.H]}")
     print()
 
     for i, step in enumerate(state.history, 1):
@@ -600,7 +893,18 @@ def show(state: ThoughtState) -> None:
 
 
 if __name__ == "__main__":
-    s = initial_state()
-    for chunk in CHUNKS:
+    import sys
+
+    which = sys.argv[1] if len(sys.argv) > 1 else "q7"
+    if which == "q22":
+        s = initial_state_q22()
+        chunks = CHUNKS
+    elif which == "q7":
+        s = initial_state_q7()
+        chunks = Q7_CHUNKS
+    else:
+        sys.exit(f"unknown question id: {which} (use q7 or q22)")
+
+    for chunk in chunks:
         s = think_step(s, chunk)
     show(s)

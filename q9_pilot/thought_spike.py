@@ -37,10 +37,15 @@ from typing import Any, Callable
 class PatternClass:
     """A category of K-evidence. Carries semantics that drive
     aggregation and tension generation. Defined once per question-
-    family and referenced by name from K-entries."""
+    family and referenced by name from K-entries.
+
+    `examples` is a tuple of short text snippets representing what
+    falls into this class. Used by classify() to assign class to a
+    chunk fragment by similarity, replacing per-class regexes."""
     name: str
     is_disambiguating: bool
     support_strength: float
+    examples: tuple = ()
 
 
 @dataclass
@@ -103,24 +108,168 @@ class ThoughtState:
 # (True) or only via T un_disambiguating tension (False).
 PATTERN_CLASSES: dict[str, PatternClass] = {
     # when-intent
-    "raw_year_in_prose":       PatternClass("raw_year_in_prose",       True,  0.20),
-    "year_in_python_version":  PatternClass("year_in_python_version",  True,  0.10),
-    "numeric_off_topic":       PatternClass("numeric_off_topic",       True,  0.10),
+    "raw_year_in_prose": PatternClass(
+        "raw_year_in_prose", True, 0.20,
+        examples=(
+            "опубликована в 2023 году",
+            "издание 1999 года",
+            "копирайт 2018",
+        ),
+    ),
+    "year_in_python_version": PatternClass(
+        "year_in_python_version", True, 0.10,
+        examples=(
+            "Python 2.7",
+            "Python 3.10",
+            "версия Python 3.6",
+        ),
+    ),
+    "numeric_off_topic": PatternClass(
+        "numeric_off_topic", True, 0.10,
+        examples=(
+            "Python 3.10 или выше",
+            "url path /3/installing",
+            "shell python3.10 --version",
+        ),
+    ),
     # who-intent
-    "name_with_relation":      PatternClass("name_with_relation",      True,  0.20),
-    "name_in_url":             PatternClass("name_in_url",             False, 0.10),
-    "anonymous_attribution":   PatternClass("anonymous_attribution",   False, 0.10),
-    "publisher_org":           PatternClass("publisher_org",           True,  0.10),
+    "name_with_relation": PatternClass(
+        "name_with_relation", True, 0.20,
+        examples=(
+            "Иванов написал эту книгу",
+            "автор Петров",
+            "составил Сидоров",
+        ),
+    ),
+    "name_in_url": PatternClass(
+        "name_in_url", False, 0.10,
+        examples=(
+            "github.com/MatWhiteside/repo",
+            "github.com/JohnDoe/project",
+            "https://github.com/UserName/code",
+        ),
+    ),
+    "anonymous_attribution": PatternClass(
+        "anonymous_attribution", False, 0.10,
+        examples=(
+            "автор предлагает",
+            "автор рекомендует",
+            "составивший советует",
+        ),
+    ),
+    "publisher_org": PatternClass(
+        "publisher_org", True, 0.10,
+        examples=(
+            "издательство ДМК Пресс",
+            "издательство Питер",
+            "ИД Манн Иванов",
+        ),
+    ),
     # what-intent (Q1 — version question)
-    "version_with_min_phrase": PatternClass("version_with_min_phrase", True,  0.20),
-    "versioned_command":       PatternClass("versioned_command",       True,  0.15),
-    "python3_command":         PatternClass("python3_command",         False, 0.10),
+    "version_with_min_phrase": PatternClass(
+        "version_with_min_phrase", True, 0.20,
+        examples=(
+            "версию Python не ниже 3.10",
+            "Python не ниже 3.9",
+            "требуется Python 3.11 или выше",
+        ),
+    ),
+    "versioned_command": PatternClass(
+        "versioned_command", True, 0.15,
+        examples=(
+            "python3.10 --version",
+            "python3.6 -m pip install",
+            "python3.11 script.py",
+        ),
+    ),
+    "python3_command": PatternClass(
+        "python3_command", False, 0.10,
+        examples=(
+            "python3 --version",
+            "python3 -m pip --version",
+            "запустить через python3",
+        ),
+    ),
     # what-intent (Q2 — pip modules question)
-    "pip_install_with_module": PatternClass("pip_install_with_module", True,  0.20),
-    "pip_mention_no_modules":  PatternClass("pip_mention_no_modules",  True,  0.05),
-    # shared
-    "no_marker":               PatternClass("no_marker",               True,  0.10),
+    "pip_install_with_module": PatternClass(
+        "pip_install_with_module", True, 0.20,
+        examples=(
+            "pip install pygame",
+            "pip install requests",
+            "python -m pip install numpy",
+        ),
+    ),
+    "pip_mention_no_modules": PatternClass(
+        "pip_mention_no_modules", True, 0.05,
+        examples=(
+            "менеджер пакетов pip",
+            "согласиться на установку pip",
+            "проверить наличие pip",
+        ),
+    ),
+    # shared — fallback when no candidate fragment found, no examples
+    # (no_marker is the absence-of-candidate case, not similarity-matched)
+    "no_marker": PatternClass(
+        "no_marker", True, 0.10, examples=(),
+    ),
 }
+
+
+# ---------------- per-intent class lists (explicit) ----------------
+# Which classes classify() considers for each extractor pack.
+# no_marker is excluded — it's the fallback when no fragment was
+# classified, not a similarity candidate.
+WHEN_CLASSES = ("raw_year_in_prose", "year_in_python_version",
+                 "numeric_off_topic")
+WHO_CLASSES = ("name_with_relation", "name_in_url",
+                "anonymous_attribution", "publisher_org")
+WHAT_VERSION_CLASSES = ("version_with_min_phrase", "versioned_command",
+                         "python3_command")
+WHAT_PIP_CLASSES = ("pip_install_with_module", "pip_mention_no_modules")
+
+
+# ---------------- classify (similarity over examples) ----------------
+
+CLASSIFY_NGRAM = 3
+CLASSIFY_THRESHOLD = 0.10  # minimal Jaccard similarity to assign a class
+
+
+def _char_ngrams(text: str, n: int = CLASSIFY_NGRAM) -> set:
+    s = text.lower().strip()
+    if len(s) < n:
+        return {s} if s else set()
+    return {s[i:i + n] for i in range(len(s) - n + 1)}
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def classify(fragment_with_context: str,
+              candidate_class_names) -> tuple[str | None, float]:
+    """Pick the pattern_class whose examples best match the fragment.
+    Uses character-3gram Jaccard. Returns (class_name, similarity)
+    of the best match if >= CLASSIFY_THRESHOLD, else (None, 0.0)."""
+    f_grams = _char_ngrams(fragment_with_context)
+    if not f_grams:
+        return None, 0.0
+    best_name = None
+    best_score = 0.0
+    for cname in candidate_class_names:
+        pc = PATTERN_CLASSES.get(cname)
+        if pc is None or not pc.examples:
+            continue
+        score = max(
+            _jaccard(f_grams, _char_ngrams(ex)) for ex in pc.examples
+        )
+        if score > best_score:
+            best_score = score
+            best_name = cname
+    if best_score < CLASSIFY_THRESHOLD:
+        return None, 0.0
+    return best_name, best_score
 
 
 # ---------------- regexes used during update ----------------
@@ -229,258 +378,361 @@ def update_knowledge(state: "ThoughtState", obs: dict) -> list:
     raise KeyError(f"no extractor for pack={pack!r}")
 
 
+def _context(text: str, m: re.Match, pad: int = 30) -> str:
+    """Window of ±pad chars around a regex match — what classify() sees."""
+    start = max(0, m.start() - pad)
+    end = min(len(text), m.end() + pad)
+    return text[start:end]
+
+
 def _update_when(state: "ThoughtState", obs: dict) -> list:
-    """Q22-class extractor: years, Python versions, URL paths."""
+    """Q22-class extractor. Two stages:
+    (a) fragment finders (YEAR_RE, PYTHON_VERSION_RE, PATH_DIGIT_RE)
+        identify candidate spans — the fragment passed to classify is
+        exactly what the finder matched, not a wider context window;
+    (b) classify(fragment) decides which class each fragment is."""
     text = obs.get("text", "")
     cid = obs.get("id", "?")
-    H = state.H
-    no_answer = _no_answer_id(H)
-    candidate_hyps = _candidate_ids(H)
+
+    fragments: list[str] = []
+    for m in YEAR_RE.finditer(text):
+        # year tokens — wrap with neighbour word(s) so classify can
+        # tell raw_year_in_prose from year_in_python_version
+        fragments.append(_context(text, m, pad=12))
+    for m in PYTHON_VERSION_RE.finditer(text):
+        # the whole "Python N.M" match is sufficient
+        fragments.append(m.group(0))
+    for m in PATH_DIGIT_RE.finditer(text):
+        fragments.append(m.group(0))
 
     new: list[KEntry] = []
-    years = YEAR_RE.findall(text)
-    py_versions = PYTHON_VERSION_RE.findall(text)
-    py_version_digits = {tok for v in py_versions for tok in v.split(".")}
+    for fragment in fragments:
+        cname, score = classify(fragment, WHEN_CLASSES)
+        if cname is None:
+            continue
+        new.append(_kentry_when(cid, cname, fragment.strip(), score, state, text))
 
-    if years:
-        for y_str in years:
-            y = int(y_str)
-            in_py_version = y_str in py_version_digits or any(
-                pv in text for pv in (f"Python {y_str}", f"Python-{y_str}")
-            )
-            if in_py_version:
-                new.append(_make_K(
-                    cid, "year_in_python_version",
-                    finding=(f"date-shaped token '{y_str}' inside Python "
-                              "version — type-rejected"),
-                    verbatim=y_str,
-                    supports_H=[no_answer] if no_answer else [],
-                ))
-            else:
-                new.append(_make_K(
-                    cid, "raw_year_in_prose",
-                    finding=f"raw year '{y}' in prose context — candidate",
-                    verbatim=y_str, value=y, links_to_Ex=True,
-                    supports_H=candidate_hyps,
-                    weakens_H=[no_answer] if no_answer else [],
-                    opposes_H=[no_answer] if no_answer else [],
-                ))
-    elif py_versions or PATH_DIGIT_RE.search(text):
-        marker = (f"Python version {py_versions[0]}" if py_versions
-                   else "URL path digits")
-        new.append(_make_K(
-            cid, "numeric_off_topic",
-            finding=(f"numeric markers ({marker}) but type-incompatible "
-                      f"with Ex.type=date — decoys for {candidate_hyps}"),
-            supports_H=[no_answer] if no_answer else [],
-            weakens_H=candidate_hyps,
-        ))
-    else:
-        new.append(_make_K(
-            cid, "no_marker",
-            finding=(f"no date markers; topic={_sniff_topic(text)}; "
-                      "expected date binding, none found"),
-            supports_H=[no_answer] if no_answer else [],
-            weakens_H=candidate_hyps,
-        ))
+    if not new:
+        new.append(_kentry_when(cid, "no_marker", "", 0.0, state, text))
     return state.K + new
+
+
+def _kentry_when(cid: str, cname: str, verbatim: str, score: float,
+                  state: "ThoughtState", context: str) -> KEntry:
+    no_answer = _no_answer_id(state.H)
+    candidate_hyps = _candidate_ids(state.H)
+
+    if cname == "raw_year_in_prose":
+        try:
+            value = int(verbatim)
+        except ValueError:
+            value = None
+        return _make_K(
+            cid, cname,
+            finding=(f"raw year '{verbatim}' in prose context — "
+                      f"candidate (sim={score:.2f})"),
+            verbatim=verbatim, value=value, links_to_Ex=True,
+            supports_H=candidate_hyps,
+            weakens_H=[no_answer] if no_answer else [],
+            opposes_H=[no_answer] if no_answer else [],
+        )
+    if cname == "year_in_python_version":
+        return _make_K(
+            cid, cname,
+            finding=(f"date-shaped token '{verbatim}' inside Python "
+                      f"version — type-rejected (sim={score:.2f})"),
+            verbatim=verbatim,
+            supports_H=[no_answer] if no_answer else [],
+        )
+    if cname == "numeric_off_topic":
+        return _make_K(
+            cid, cname,
+            finding=(f"numeric marker '{verbatim}' but type-incompatible "
+                      f"with Ex.type=date (sim={score:.2f})"),
+            verbatim=verbatim,
+            supports_H=[no_answer] if no_answer else [],
+            weakens_H=candidate_hyps,
+        )
+    if cname == "no_marker":
+        return _make_K(
+            cid, cname,
+            finding=(f"no date markers; topic={_sniff_topic(context)}"),
+            supports_H=[no_answer] if no_answer else [],
+            weakens_H=candidate_hyps,
+        )
+    raise ValueError(f"unknown when-class: {cname}")
 
 
 def _update_who(state: "ThoughtState", obs: dict) -> list:
-    """Q7-class extractor: person names, author keywords, URL usernames,
-    publisher orgs."""
+    """Q7-class extractor. Fragment finders: URL+latin-name, author-
+    keyword, publisher-org. Each fragment goes through classify()
+    against WHO_CLASSES; class result drives K-entry construction."""
     text = obs.get("text", "")
     cid = obs.get("id", "?")
-    H = state.H
-    no_answer = _no_answer_id(H)
-    candidate_hyps = _candidate_ids(H)
-    h_single = candidate_hyps[0] if candidate_hyps else None
 
-    new: list[KEntry] = []
+    # Fragments — each is the substring the finder considers
+    # "interesting"; the size matches what it takes to distinguish
+    # the candidate classes. classify gets the fragment as-is.
+    fragments: list[tuple[str, str]] = []   # (verbatim, fragment-for-classify)
 
-    # 1) URL containing a Latin CamelCase name
+    # 1) URL containing Latin CamelCase name — fragment is the URL
     url_m = URL_RE.search(text)
     if url_m:
-        url_span = url_m.group(0)
-        latin_in_url = LATIN_CAMEL_RE.search(url_span)
+        latin_in_url = LATIN_CAMEL_RE.search(url_m.group(0))
         if latin_in_url:
-            name = latin_in_url.group(0)
-            new.append(_make_K(
-                cid, "name_in_url",
-                finding=(f"name-shaped token '{name}' inside URL "
-                          f"({url_span[:50]}...) — could be author, could "
-                          "be username; ambiguous, splits support"),
-                verbatim=name,
-                supports_H=[h_single, no_answer] if (h_single and no_answer) else [],
-            ))
+            fragments.append((latin_in_url.group(0), url_m.group(0)))
 
-    # 2) Author keyword present
+    # 2) Author keyword + ~60 chars after — needed to distinguish
+    #    name_with_relation from anonymous_attribution
     kw_m = AUTHOR_KW_RE.search(text)
     if kw_m:
-        after = text[kw_m.end():kw_m.end() + 60]
-        cyr_name = NAME_CYR_RE.search(after)
-        if cyr_name and cyr_name.group(0).strip().lower() not in (
-            "программист", "разработчик", "автор", "пользоват",
-        ):
-            # Real candidate: keyword + Cyrillic name in proximity
-            new.append(_make_K(
-                cid, "name_with_relation",
-                finding=(f"'{kw_m.group(0)}' followed by named entity "
-                          f"'{cyr_name.group(0)}' — explicit attribution"),
-                verbatim=cyr_name.group(0), links_to_Ex=True,
-                supports_H=[h_single] if h_single else [],
-                weakens_H=[no_answer] if no_answer else [],
-                opposes_H=[no_answer] if no_answer else [],
-            ))
-        else:
-            # Anonymous self-reference: 'автор' without follow-up name.
-            # Symmetric between h_single and no_answer (non-disambig).
-            new.append(_make_K(
-                cid, "anonymous_attribution",
-                finding=(f"'{kw_m.group(0)}' present but no named entity "
-                          "follows — anonymous self-reference"),
-                supports_H=[h_single, no_answer] if (h_single and no_answer) else [],
-            ))
+        end = min(len(text), kw_m.end() + 60)
+        fragments.append((kw_m.group(0), text[kw_m.start():end]))
 
-    # 3) Publisher organization (without authorship verb)
-    if not new:
-        org_m = ORG_CYR_RE.search(text)
-        publisher_context = (
-            "издательств" in text.lower()
-            or "пресс" in text.lower()
-            or "press" in text.lower()
-        )
-        if org_m and publisher_context:
-            new.append(_make_K(
-                cid, "publisher_org",
-                finding=(f"organization '{org_m.group(0)}' in publisher "
-                          "context — publishing is not authoring"),
-                verbatim=org_m.group(0),
-                supports_H=[no_answer] if no_answer else [],
-                weakens_H=candidate_hyps,
-            ))
+    # 3) Org name with publisher-context word in immediate vicinity —
+    #    needed to distinguish publisher_org from generic capitalized
+    #    name (which other classes might also hold)
+    org_m = ORG_CYR_RE.search(text)
+    if org_m:
+        # include some text before org to capture "издательство" if present
+        start = max(0, org_m.start() - 20)
+        end = min(len(text), org_m.end() + 5)
+        fragments.append((org_m.group(0), text[start:end]))
 
-    # 4) Fallback: nothing relevant found
+    new: list[KEntry] = []
+    for verbatim, fragment in fragments:
+        cname, score = classify(fragment, WHO_CLASSES)
+        if cname is None:
+            continue
+        new.append(_kentry_who(cid, cname, verbatim, score, state, fragment))
+
     if not new:
-        new.append(_make_K(
-            cid, "no_marker",
-            finding=(f"no name, no author keyword; "
-                      f"topic={_sniff_topic(text)}"),
-            supports_H=[no_answer] if no_answer else [],
-            weakens_H=candidate_hyps,
-        ))
+        new.append(_kentry_who(cid, "no_marker", "", 0.0, state, text))
 
     return state.K + new
+
+
+def _kentry_who(cid: str, cname: str, verbatim: str, score: float,
+                 state: "ThoughtState", context: str) -> KEntry:
+    no_answer = _no_answer_id(state.H)
+    candidate_hyps = _candidate_ids(state.H)
+    h_single = candidate_hyps[0] if candidate_hyps else None
+
+    if cname == "name_with_relation":
+        return _make_K(
+            cid, cname,
+            finding=(f"explicit attribution near '{verbatim}' "
+                      f"(sim={score:.2f})"),
+            verbatim=verbatim, links_to_Ex=True,
+            supports_H=[h_single] if h_single else [],
+            weakens_H=[no_answer] if no_answer else [],
+            opposes_H=[no_answer] if no_answer else [],
+        )
+    if cname == "name_in_url":
+        return _make_K(
+            cid, cname,
+            finding=(f"name-shaped token '{verbatim}' inside URL — "
+                      f"ambiguous, splits support (sim={score:.2f})"),
+            verbatim=verbatim,
+            supports_H=[h_single, no_answer] if (h_single and no_answer) else [],
+        )
+    if cname == "anonymous_attribution":
+        return _make_K(
+            cid, cname,
+            finding=(f"'{verbatim}' present without named entity following "
+                      f"— anonymous self-reference (sim={score:.2f})"),
+            supports_H=[h_single, no_answer] if (h_single and no_answer) else [],
+        )
+    if cname == "publisher_org":
+        return _make_K(
+            cid, cname,
+            finding=(f"organization '{verbatim}' in publisher context — "
+                      f"publishing is not authoring (sim={score:.2f})"),
+            verbatim=verbatim,
+            supports_H=[no_answer] if no_answer else [],
+            weakens_H=candidate_hyps,
+        )
+    if cname == "no_marker":
+        return _make_K(
+            cid, cname,
+            finding=(f"no name, no author keyword; "
+                      f"topic={_sniff_topic(context)}"),
+            supports_H=[no_answer] if no_answer else [],
+            weakens_H=candidate_hyps,
+        )
+    raise ValueError(f"unknown who-class: {cname}")
 
 
 def _update_what_version(state: "ThoughtState", obs: dict) -> list:
-    """Q1-class extractor: minimum Python version. A single chunk can
-    produce multiple KEntries (min-phrase + versioned-cmd + python3-cmd)."""
+    """Q1-class extractor. Three fragment finders (min-phrase,
+    versioned-command, python3-command) — each match goes through
+    classify() against WHAT_VERSION_CLASSES."""
     text = obs.get("text", "")
     cid = obs.get("id", "?")
-    H = state.H
-    no_answer = _no_answer_id(H)
-    candidate_hyps = _candidate_ids(H)
-    h_specific = candidate_hyps[0] if candidate_hyps else None
-    h_general = candidate_hyps[1] if len(candidate_hyps) > 1 else None
+
+    # Each finder produces a fragment that is exactly its match —
+    # no wider context, otherwise neighbouring matches in the same
+    # chunk pollute classification (e.g. python3 in a chunk that
+    # also has python3.10 nearby).
+    fragments: list[tuple[str, str | None]] = []   # (fragment, value)
+    for m in VERSION_MIN_PHRASE_RE.finditer(text):
+        fragments.append((m.group(0), m.group(1)))
+    for m in VERSIONED_CMD_RE.finditer(text):
+        fragments.append((m.group(0), m.group(1)))
+    for m in PYTHON3_CMD_RE.finditer(text):
+        # python3 alone is 7 chars — examples like "python3 --version"
+        # are longer. Including ~10 trailing chars helps the n-gram
+        # overlap distinguish python3_command from versioned_command.
+        end = min(len(text), m.end() + 10)
+        fragments.append((text[m.start():end], None))
 
     new: list[KEntry] = []
-
-    for m in VERSION_MIN_PHRASE_RE.finditer(text):
-        new.append(_make_K(
-            cid, "version_with_min_phrase",
-            finding=(f"explicit minimum-version phrase: "
-                      f"'{m.group(0).strip()}' -> {m.group(1)}"),
-            verbatim=m.group(0), value=m.group(1), links_to_Ex=True,
-            supports_H=[h_specific] if h_specific else [],
-            weakens_H=[h for h in (h_general, no_answer) if h],
-            opposes_H=[no_answer] if no_answer else [],
-        ))
-
-    for m in VERSIONED_CMD_RE.finditer(text):
-        new.append(_make_K(
-            cid, "versioned_command",
-            finding=(f"versioned python command: '{m.group(0)}' "
-                      f"-> minor {m.group(1)}"),
-            verbatim=m.group(0), value=m.group(1), links_to_Ex=True,
-            supports_H=[h_specific] if h_specific else [],
-            weakens_H=[no_answer] if no_answer else [],
-            opposes_H=[no_answer] if no_answer else [],
-        ))
-
-    for m in PYTHON3_CMD_RE.finditer(text):
-        new.append(_make_K(
-            cid, "python3_command",
-            finding=(f"generic 'python3' command: '{m.group(0)}' "
-                      "— Python 3.x but not specific minor"),
-            verbatim=m.group(0),
-            supports_H=[h_specific, h_general] if (h_specific and h_general) else [],
-        ))
+    for fragment, value in fragments:
+        cname, score = classify(fragment, WHAT_VERSION_CLASSES)
+        if cname is None:
+            continue
+        new.append(_kentry_what_version(cid, cname, fragment.strip(), value,
+                                         score, state, text))
 
     if not new:
-        new.append(_make_K(
-            cid, "no_marker",
-            finding=(f"no version markers; topic={_sniff_topic(text)}"),
-            supports_H=[no_answer] if no_answer else [],
-            weakens_H=candidate_hyps,
-        ))
+        new.append(_kentry_what_version(cid, "no_marker", "", None, 0.0,
+                                         state, text))
 
     return state.K + new
 
 
+def _kentry_what_version(cid: str, cname: str, verbatim: str,
+                          value, score: float,
+                          state: "ThoughtState", context: str) -> KEntry:
+    no_answer = _no_answer_id(state.H)
+    candidate_hyps = _candidate_ids(state.H)
+    h_specific = candidate_hyps[0] if candidate_hyps else None
+    h_general = candidate_hyps[1] if len(candidate_hyps) > 1 else None
+
+    if cname == "version_with_min_phrase":
+        return _make_K(
+            cid, cname,
+            finding=(f"explicit minimum-version phrase: "
+                      f"'{verbatim.strip()}' -> {value} (sim={score:.2f})"),
+            verbatim=verbatim, value=value, links_to_Ex=True,
+            supports_H=[h_specific] if h_specific else [],
+            weakens_H=[h for h in (h_general, no_answer) if h],
+            opposes_H=[no_answer] if no_answer else [],
+        )
+    if cname == "versioned_command":
+        return _make_K(
+            cid, cname,
+            finding=(f"versioned python command: '{verbatim}' -> "
+                      f"minor {value} (sim={score:.2f})"),
+            verbatim=verbatim, value=value, links_to_Ex=True,
+            supports_H=[h_specific] if h_specific else [],
+            weakens_H=[no_answer] if no_answer else [],
+            opposes_H=[no_answer] if no_answer else [],
+        )
+    if cname == "python3_command":
+        return _make_K(
+            cid, cname,
+            finding=(f"generic 'python3' command: '{verbatim}' — Python 3.x "
+                      f"but not specific minor (sim={score:.2f})"),
+            verbatim=verbatim,
+            supports_H=[h_specific, h_general] if (h_specific and h_general) else [],
+        )
+    if cname == "no_marker":
+        return _make_K(
+            cid, cname,
+            finding=(f"no version markers; topic={_sniff_topic(context)}"),
+            supports_H=[no_answer] if no_answer else [],
+            weakens_H=candidate_hyps,
+        )
+    raise ValueError(f"unknown what_version-class: {cname}")
+
+
 def _update_what_pip(state: "ThoughtState", obs: dict) -> list:
-    """Q2-class extractor: pair of pip-installed modules. Multiple
-    `pip install <name>` entries from the same chunk are marked as
-    constituents of the same answer (constituent_of='pip_setup_pair'),
-    so revise_hypotheses gives them full contribution per piece
-    instead of treating the second as a redundant repeat."""
+    """Q2-class extractor. Two fragment finders (pip-install-module,
+    pip-mention). Each match goes through classify() against
+    WHAT_PIP_CLASSES. Constituency rule: if pip-install matches appear
+    >=2 in the same chunk AND they classify to the same class, all
+    such entries are stamped with constituent_of='pip_setup_pair'."""
     text = obs.get("text", "")
     cid = obs.get("id", "?")
-    H = state.H
-    no_answer = _no_answer_id(H)
-    candidate_hyps = _candidate_ids(H)
-    h_pair = candidate_hyps[0] if candidate_hyps else None
+
+    # Stage A: find all pip-install fragments (each is its own match)
+    install_matches = list(PIP_INSTALL_MODULE_RE.finditer(text))
+    pip_mention_match = (None if install_matches
+                          else PIP_MENTION_RE.search(text))
 
     new: list[KEntry] = []
 
-    pip_install_matches = list(PIP_INSTALL_MODULE_RE.finditer(text))
+    # Stage B: classify each pip-install match
+    install_kentries = []
+    for m in install_matches:
+        verbatim, value = m.group(0), m.group(1)
+        cname, score = classify(verbatim, WHAT_PIP_CLASSES)
+        if cname is None:
+            continue
+        install_kentries.append((cname, verbatim, value, score, verbatim))
 
-    # Multiple pip-install commands in one chunk are constituents of
-    # the same setup-pair group. Single one — no group label.
-    constituency_label = (
-        "pip_setup_pair" if len(pip_install_matches) >= 2 else ""
-    )
-    for m in pip_install_matches:
-        new.append(_make_K(
-            cid, "pip_install_with_module",
-            finding=(f"pip install command names module '{m.group(1)}' "
-                      "in setup context"),
-            verbatim=m.group(0), value=m.group(1), links_to_Ex=True,
+    # Constituency: multiple pip-install entries of the same class
+    # in one chunk are pieces of the same setup-pair
+    same_class = (len(install_kentries) >= 2
+                  and len({k[0] for k in install_kentries}) == 1)
+    label = "pip_setup_pair" if same_class else ""
+
+    for cname, verbatim, value, score, context in install_kentries:
+        new.append(_kentry_what_pip(cid, cname, verbatim, value, score,
+                                     state, context, label))
+
+    # Pip mention without specific install — only if no install matched
+    if not install_matches and pip_mention_match:
+        m = pip_mention_match
+        verbatim = m.group(0)
+        cname, score = classify(verbatim, WHAT_PIP_CLASSES)
+        if cname is not None:
+            new.append(_kentry_what_pip(cid, cname, verbatim, None, score,
+                                         state, verbatim, ""))
+
+    if not new:
+        new.append(_kentry_what_pip(cid, "no_marker", "", None, 0.0,
+                                      state, text, ""))
+
+    return state.K + new
+
+
+def _kentry_what_pip(cid: str, cname: str, verbatim: str,
+                      value, score: float, state: "ThoughtState",
+                      context: str, constituency_label: str) -> KEntry:
+    no_answer = _no_answer_id(state.H)
+    candidate_hyps = _candidate_ids(state.H)
+    h_pair = candidate_hyps[0] if candidate_hyps else None
+
+    if cname == "pip_install_with_module":
+        return _make_K(
+            cid, cname,
+            finding=(f"pip install command names module '{value or verbatim}' "
+                      f"in setup context (sim={score:.2f})"),
+            verbatim=verbatim, value=value, links_to_Ex=True,
             supports_H=[h_pair] if h_pair else [],
             weakens_H=[no_answer] if no_answer else [],
             opposes_H=[no_answer] if no_answer else [],
             constituent_of=constituency_label,
-        ))
-
-    if not new and PIP_MENTION_RE.search(text):
-        new.append(_make_K(
-            cid, "pip_mention_no_modules",
-            finding=("pip mentioned in setup context but no module names "
-                      "given — corpus discusses pip, list not here"),
-            supports_H=[],
+        )
+    if cname == "pip_mention_no_modules":
+        return _make_K(
+            cid, cname,
+            finding=(f"pip mentioned in setup context but no module names "
+                      f"(sim={score:.2f})"),
+            verbatim=verbatim, supports_H=[],
             weakens_H=[no_answer] if no_answer else [],
-        ))
-
-    if not new:
-        new.append(_make_K(
-            cid, "no_marker",
+        )
+    if cname == "no_marker":
+        return _make_K(
+            cid, cname,
             finding=(f"no pip context, no module names; "
-                      f"topic={_sniff_topic(text)}"),
+                      f"topic={_sniff_topic(context)}"),
             supports_H=[no_answer] if no_answer else [],
             weakens_H=candidate_hyps,
-        ))
-
-    return state.K + new
+        )
+    raise ValueError(f"unknown what_pip-class: {cname}")
 
 
 def _sniff_topic(text: str) -> str:

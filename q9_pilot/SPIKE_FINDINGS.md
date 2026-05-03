@@ -188,6 +188,68 @@ the fragment. Commit (this one) widens the version-mention regex to
 handle filtering. Recorded as a structural observation, not an
 intervention plan.
 
+## 7. Audit comparison: Q22 + Q7
+
+Q22 and Q7 were hand-labeled in RVP audit format and compared
+against the runtime state produced by the spike (commits `262ae52`,
+`d778bab`). The comparison clarified the relationship between
+audit-language and runtime state. Both the rejected interpretation
+and the accepted one are recorded below — the rejected one is
+natural and easy to fall back into, and the document needs to
+defend against repeating that fall.
+
+**Rejected interpretation.** First reading of the divergences:
+audit and state describe different positions of observation —
+audit as external observer, state as internal movement of the
+system. Rejected. Contradicts THINKING_CORE §6, where
+self-observation is defined as **the system looking at its own
+move**, and `question_fit` is named as a form of reflection over
+the system's own understanding of the question. If audit and
+state were different positions, there would be no hope of the
+system ever describing its own failure — the external position
+would be permanently inaccessible from inside.
+
+**Accepted interpretation.** Audit and runtime state describe the
+same thing — the system's reasoning trajectory — at different
+**moments of accessibility**. A human auditor currently performs
+the reflection from outside; the task of a future ThoughtState is
+to perform the same reflection from inside. Divergences between
+audit-labeling and runtime state are not different languages.
+They are a **map of points where the system is currently blind to
+its own move**.
+
+**Q22.** Almost no divergence. Audit
+`failure_mode_audit=not_in_corpus` corresponds to runtime
+`predicate=refuse` reached via `_role==no_answer` convergence. A
+simple no_answer task requires minimal reflection, and the spike
+supplies it.
+
+**Q7.** Divergences are concrete; each is a specific blind spot.
+
+- Audit identifies the interpretation "author of the book" (i3);
+  the spike does not. No reflection at the level of "what is the
+  question actually asking about".
+- Audit records `subsumes` between interpretations (i3 subsumes
+  i1 and i2); the spike sees only `competes_with` via symmetry of
+  K (the un_disambiguating tension). It cannot derive
+  hierarchical relations between readings.
+- Audit records `ambiguity.to_auditor=true`; the spike has no
+  analog. No full-form reflection over the spike's own parsing of
+  the question.
+
+**Refinement to RVP §0.** The RVP §0 phrasing "audit is the
+language of the future ThoughtState about failures" is precise
+but needs refinement: it is not a parallel language of an
+external observer; it is the current external implementation of
+what should become internal. Divergences are the roadmap of
+internal reflection, not a difference of positions.
+
+**Connection to THINKING_CORE §6.** `question_fit` is named in §6
+as a form of reflection. The Q7 audit comparison shows where the
+spike does not yet realize `question_fit` in full: at the level
+of question semantics, hierarchical relations between readings,
+and `ambiguity.to_self`.
+
 ---
 
 Four runs, four different question classes (no_answer, ambiguous,

@@ -143,6 +143,16 @@ current H balance". With them, stuck is a specific graph predicate
 that can be detected and acted on (the action being acknowledgment of
 inability, not refuse and not answer).
 
+A caveat on stuck. Q2's prior stuck reading (h1=0.31, h3=0.40, no
+remaining disambiguating class) disappeared once the concept gained
+the constituency relation: the same evidence stream now produces
+hit. A stuck reading may therefore indicate that the concept is
+incomplete relative to the data, not that the data is genuinely
+unresolvable. Stuck remains valid only for configurations whose
+un_disambiguating tensions have no candidate disambiguating class
+in the corpus's full vocabulary; distinguishing those two cases is
+an observer's task, not a property the framework decides.
+
 ## What this earns
 
 A concept where the four §2 findings are not patches discovered after
@@ -166,6 +176,21 @@ This document does not address:
 
 These three are local fixes that fit inside this concept. They are
 not arguments against it.
+
+## Implementation questions outside this revision
+
+This document describes structure and semantics. It does not specify:
+
+- **Pattern_class assignment.** STATE_AS_GRAPH says what state does
+  with categorized entries; how the categories are assigned (regex,
+  hand-labeled, learned) is a separate question.
+- **K and T entry lifecycle.** When entries are immutable, when they
+  may be retired, whether prior entries can be recomputed in light
+  of later evidence — open at implementation time. Back-references
+  and active_condition give the structural hooks; the policy that
+  uses them is left to the implementation.
+
+---
 
 This document is also not THINKING_CORE v2. It is a single revision
 to the description of what the slots contain. Everything else in

@@ -34,6 +34,12 @@ within shared intent.
 
 Each is structural — would not surface from a design review.
 
+**Status (after commit 14a90f6, STATE_AS_GRAPH implementation):**
+all four findings below are incorporated into STATE_AS_GRAPH §2-§4
+as structural properties. Each entry remains as the empirical
+observation that produced it; the structural account lives in
+STATE_AS_GRAPH.
+
 - **`pattern_class` is a necessary mediator between K and H.**
   Concept had K and H as adjacent layers. Aggregating K into H by raw
   count produces oscillation (Q7 h1 bouncing 0.40→0.50→0.45→0.55→0.50).
@@ -85,26 +91,50 @@ Each is structural — would not surface from a design review.
   in the same chunk. T accumulates ambiguity but has no mechanism to
   retire it through structural reasoning.
 
-## 3. Open
+## 3. Open (status after STATE_AS_GRAPH implementation)
 
-- Convergence semantics for candidate-leader **(Q1+Q2 confirms gap)**.
-  Two hit-cases now show no convergence event when h_candidate leads.
-  Q2 additionally shows a "stuck" state (no_answer slightly leads
-  but neither side passes threshold). Three semantic kinds clearly
-  distinct.
-- Resolution rule for un_disambiguating when differentiating evidence
-  arrives in a different class for the same H-set. Still one Q1
-  datum (Q2 has no un_disambiguating tensions to resolve).
-- Diminishing-per-class for "constituency" cases (Q2 finding). Need
-  another plural-answer question to see if the conflation is uniform
-  across plural-answer types or pip-specific.
-- Halt condition / "give up after N steps" mechanism. Q2 ends with
-  drift as the only T entry and no convergence in either direction.
-  Spike has no exit.
-- Whether the §2 findings are uniform across intents — four runs is
-  better than three; pattern_class and role-conditional convergence
-  hold across all four. Diminishing-conflation surfaced only when a
-  plural-answer case appeared.
+- **Convergence semantics for candidate-leader** — **CLOSED**.
+  Confirmed on n=4 (Q22, Q7 refuse; Q1, Q2 hit). Further runs would
+  expand coverage to new configurations, not confirm the gap.
+  Incorporated as `compute_state_predicate` in STATE_AS_GRAPH §4.
+
+- **Resolution rule for un_disambiguating when differentiating
+  evidence arrives in a different class for the same H-set** —
+  **CLOSED**. Resolution is now a structural property of T-entries'
+  back-references, not a separate rule. Two visible patterns from
+  the same property:
+  - Synchronous (Q1 step 1): differentiating evidence arrives in
+    the same think_step as the symmetric class. The
+    un_disambiguating entry is never emitted because its
+    active_condition is False from the start (a disambiguating
+    K-entry with supports_H ⊊ H-set already exists).
+  - Asynchronous (Q7 step 1 → step 2): the entry is emitted at
+    step 1 because no disambiguating evidence yet exists, then is
+    not re-emitted at step 2 once publisher_org arrives with
+    supports_H=[h3] strict subset of [h1, h3]. Trace shows
+    explicit `T_RETIRED`.
+  Same back-reference mechanism, two manifestations.
+
+- **Diminishing-per-class for "constituency" cases** — **CLOSED**.
+  Incorporated as `constituent_of` relation on KEntry in
+  STATE_AS_GRAPH §2. Q2 step 1 went from h1=+0.06 to h1=+0.40 once
+  pygame and PythonTurtle carry the same constituent_of label.
+  Whether constituency arises automatically from chunk co-location
+  or requires explicit marking is an implementation question, not
+  a structural one.
+
+- **Halt condition / "give up after N steps" mechanism** — **subsumed
+  by `compute_state_predicate`**. The `stuck` predicate is the
+  honest equivalent of "give up": no remaining pattern_class can
+  resolve active un_disambiguating, so further observation is not
+  expected to change the configuration. No separate halt machinery
+  needed.
+
+- **Uniformity of §2 findings across intents** — **CLOSED on n=4**.
+  pattern_class layer, role-conditional convergence, T
+  back-references, constituency relation all hold uniformly across
+  {when, who, what-single, what-plural}. Further runs would test
+  scaling, not uniformity.
 
 ## 4. Q-specific, localized
 
@@ -120,6 +150,26 @@ Each is structural — would not surface from a design review.
   `opposes_H` via oppose_pull does). Q2's `pip_mention_no_modules`
   class set `weakens_H=[h3]` expecting weak push-down on h3, but
   h3 didn't move. Local rule choice, not architectural.
+
+## 5. What changed after STATE_AS_GRAPH implementation
+
+Commit 14a90f6 reimplemented `thought_spike.py` so the four §2
+findings live as structural properties (typed PatternClass, KEntry
+with explicit relations, TEntry with back-references and
+active_condition, compute_state_predicate replacing convergence as
+T-entry). Prior-run arcs preserved: Q22 and Q7 produce identical H
+trajectories step-by-step; Q1 step 1 produces h1=0.65 from the same
+stack of disambiguating classes. Q2 step 1 changed from h1=0.41
+(stuck final) to h1=0.75 (hit at step 1) because pygame and
+PythonTurtle now carry constituent_of='pip_setup_pair' and revise
+gives both full per-piece contribution. Q1 step 1 produces no
+un_disambiguating T-entry at all — the active_condition is False
+from the start because version_with_min_phrase arrives in the same
+chunk as python3_command. compute_state_predicate detects 'hit' on
+Q1 and Q2 from step 1 onwards; next_action returns
+`answer(hypothesis=h1, …)`. Same-arc preservation on Q22/Q7/Q1 was
+the success criterion for the structural transition; Q2 stuck →
+hit was the new behavior earned by §2's constituency finding.
 
 ---
 

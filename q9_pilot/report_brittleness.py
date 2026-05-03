@@ -22,7 +22,8 @@ from thought_spike import (
     initial_state_q1, think_step, compute_state_predicate,
     classify, _char_ngrams, _jaccard,
     PATTERN_CLASSES, WHAT_VERSION_CLASSES,
-    VERSION_MIN_PHRASE_RE, VERSIONED_CMD_RE, PYTHON3_CMD_RE,
+    PYTHON_VERSION_NEAR_RE, VERSIONED_CMD_RE, PYTHON3_CMD_RE,
+    reset_classify_misses, get_classify_misses,
 )
 
 
@@ -33,9 +34,9 @@ ORIGINAL = "версию Python не ниже 3.10"
 def regex_test(fragment: str) -> dict:
     """What each regex finder produces on the fragment."""
     return {
-        "VERSION_MIN_PHRASE_RE": [m.group(0) for m in VERSION_MIN_PHRASE_RE.finditer(fragment)],
-        "VERSIONED_CMD_RE":      [m.group(0) for m in VERSIONED_CMD_RE.finditer(fragment)],
-        "PYTHON3_CMD_RE":        [m.group(0) for m in PYTHON3_CMD_RE.finditer(fragment)],
+        "PYTHON_VERSION_NEAR_RE": [m.group(0) for m in PYTHON_VERSION_NEAR_RE.finditer(fragment)],
+        "VERSIONED_CMD_RE":       [m.group(0) for m in VERSIONED_CMD_RE.finditer(fragment)],
+        "PYTHON3_CMD_RE":         [m.group(0) for m in PYTHON3_CMD_RE.finditer(fragment)],
     }
 
 
@@ -55,6 +56,7 @@ def classify_with_scores(fragment: str) -> tuple:
 
 
 def run_q1(chunks):
+    reset_classify_misses()
     state = initial_state_q1()
     trace = []
     for chunk in chunks:
@@ -68,7 +70,7 @@ def run_q1(chunks):
             "h": {h["id"]: round(h["weight"], 3) for h in state.H},
             "predicate": compute_state_predicate(state),
         })
-    return trace
+    return trace, get_classify_misses()
 
 
 def main():
@@ -105,7 +107,7 @@ def main():
 
     print("--- (3) Q1 step 1 H weights ---")
     print(f"  paraphrased Q1_CHUNKS:")
-    paraphrased = run_q1(Q1_CHUNKS)
+    paraphrased, p_misses = run_q1(Q1_CHUNKS)
     for r in paraphrased:
         h_str = " ".join(f"{k}={v:.2f}" for k, v in r["h"].items())
         cls_str = ",".join(r["K_classes_added"])
@@ -113,12 +115,21 @@ def main():
               f"K={cls_str:<55} H: {h_str:<35} pred={r['predicate']}")
     print()
     print(f"  original Q1_CHUNKS_ORIGINAL (re-run for direct comparison):")
-    original = run_q1(Q1_CHUNKS_ORIGINAL)
+    original, o_misses = run_q1(Q1_CHUNKS_ORIGINAL)
     for r in original:
         h_str = " ".join(f"{k}={v:.2f}" for k, v in r["h"].items())
         cls_str = ",".join(r["K_classes_added"])
         print(f"    step {original.index(r)+1:<2} {r['chunk_id']:<15} "
               f"K={cls_str:<55} H: {h_str:<35} pred={r['predicate']}")
+    print()
+
+    print("--- (3a) Classify-misses (fragment found by regex but score < threshold) ---")
+    print(f"  paraphrased run: {len(p_misses)} miss(es)")
+    for m in p_misses:
+        print(f"    [{m['where']}] chunk={m['chunk_id']} fragment={m['fragment']!r}")
+    print(f"  original run:    {len(o_misses)} miss(es)")
+    for m in o_misses:
+        print(f"    [{m['where']}] chunk={m['chunk_id']} fragment={m['fragment']!r}")
     print()
 
     print("--- (4) Step-1 comparison ---")

@@ -171,6 +171,23 @@ Q1 and Q2 from step 1 onwards; next_action returns
 the success criterion for the structural transition; Q2 stuck →
 hit was the new behavior earned by §2's constituency finding.
 
+## 6. K-entry creation has two layers, robustness is layer-specific
+
+K-entry creation decomposes into two layers: fragment-extraction
+(chunk → candidate substrings) and classification (substring →
+pattern_class). Robustness is layer-specific. Q1 paraphrase test
+(commit `f4aef74`) confirmed examples-based classification on
+paraphrase «требуется Python от 3.10» — score 0.515, 5× threshold —
+but regex fragment-extraction missed entirely, and the missing
+fragment changed Q1 final predicate from hit to refuse. The two
+layers fail differently: regex fragment-finders are brittle to
+paraphrase by construction (they encode specific surface patterns);
+the examples-based classifier was robust to this paraphrase given
+the fragment. Commit (this one) widens the version-mention regex to
+"Python ... <version>" within 40 chars; classification continues to
+handle filtering. Recorded as a structural observation, not an
+intervention plan.
+
 ---
 
 Four runs, four different question classes (no_answer, ambiguous,

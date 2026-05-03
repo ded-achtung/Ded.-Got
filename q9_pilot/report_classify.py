@@ -22,7 +22,7 @@ from thought_spike import (
     think_step, compute_state_predicate,
     YEAR_RE, PYTHON_VERSION_RE, PATH_DIGIT_RE,
     URL_RE, LATIN_CAMEL_RE, NAME_CYR_RE, ORG_CYR_RE, AUTHOR_KW_RE,
-    VERSION_MIN_PHRASE_RE, VERSIONED_CMD_RE, PYTHON3_CMD_RE,
+    VERSIONED_CMD_RE, PYTHON3_CMD_RE,
     PIP_INSTALL_MODULE_RE, PIP_MENTION_RE,
 )
 
@@ -79,9 +79,24 @@ def regex_baseline_who(text: str) -> list[str]:
     return out
 
 
+import re as _re
+# Narrow VERSION_MIN_PHRASE_RE — preserved here for baseline comparison
+# only. The spike's fragment finder is now PYTHON_VERSION_NEAR_RE
+# (wide). The narrow form is kept here so we can show, per chunk,
+# what the pre-widening regex labelling would have produced.
+_NARROW_VERSION_MIN_PHRASE_RE = _re.compile(
+    r"(?:версию\s+Python\s+не\s+ниже\s+|"
+     r"Python\s+(?:версии\s+)?не\s+ниже\s+|"
+     r"требуется\s+Python\s+|"
+     r"минимум\s+Python\s+)"
+    r"(\d+(?:\.\d+)+)",
+    _re.IGNORECASE,
+)
+
+
 def regex_baseline_what_version(text: str) -> list[str]:
     out = []
-    for _ in VERSION_MIN_PHRASE_RE.finditer(text):
+    for _ in _NARROW_VERSION_MIN_PHRASE_RE.finditer(text):
         out.append("version_with_min_phrase")
     for _ in VERSIONED_CMD_RE.finditer(text):
         out.append("versioned_command")

@@ -247,6 +247,19 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
+# classify-miss log — appended to by extractors when classify()
+# returns None. Reset between report runs; read by report scripts.
+_CLASSIFY_MISSES: list[dict] = []
+
+
+def reset_classify_misses() -> None:
+    _CLASSIFY_MISSES.clear()
+
+
+def get_classify_misses() -> list[dict]:
+    return list(_CLASSIFY_MISSES)
+
+
 def classify(fragment_with_context: str,
               candidate_class_names) -> tuple[str | None, float]:
     """Pick the pattern_class whose examples best match the fragment.
@@ -296,12 +309,15 @@ AUTHOR_KW_RE = re.compile(
 )
 
 # what-intent regexes (Q1: minimum Python version)
-VERSION_MIN_PHRASE_RE = re.compile(
-    r"(?:версию\s+Python\s+не\s+ниже\s+|"
-     r"Python\s+(?:версии\s+)?не\s+ниже\s+|"
-     r"требуется\s+Python\s+|"
-     r"минимум\s+Python\s+)"
-    r"(\d+(?:\.\d+)+)",
+# Wide finder: any "Python" word adjacent to a `\d+\.\d+` version
+# string within 40 chars (no period/newline between). Catches
+# "не ниже X", "требуется Python от X", "Python X или выше",
+# bare "Python X.Y" — classification decides which class fits.
+# (Was VERSION_MIN_PHRASE_RE with narrow alternations; widened so
+# fragment-extraction doesn't gate on specific surface phrasings.)
+PYTHON_VERSION_NEAR_RE = re.compile(
+    r"\bPython\b[^.\n]{0,40}?(\d+\.\d+)"
+    r"|(\d+\.\d+)[^.\n]{0,40}?\bPython\b",
     re.IGNORECASE,
 )
 VERSIONED_CMD_RE = re.compile(r"\bpython(\d+\.\d+)\b")
@@ -570,26 +586,41 @@ def _update_what_version(state: "ThoughtState", obs: dict) -> list:
     text = obs.get("text", "")
     cid = obs.get("id", "?")
 
-    # Each finder produces a fragment that is exactly its match —
-    # no wider context, otherwise neighbouring matches in the same
-    # chunk pollute classification (e.g. python3 in a chunk that
-    # also has python3.10 nearby).
-    fragments: list[tuple[str, str | None]] = []   # (fragment, value)
-    for m in VERSION_MIN_PHRASE_RE.finditer(text):
-        fragments.append((m.group(0), m.group(1)))
+    # Each finder produces a fragment of its own scope.
+    # PYTHON_VERSION_NEAR_RE is the wide finder: it's intentionally
+    # over-permissive (catches any "Python ... <ver>" within 40
+    # chars no-period). Classification filters: a fragment that
+    # falls below CLASSIFY_THRESHOLD on every WHAT_VERSION_CLASSES
+    # example is recorded as a classify-miss and dropped.
+    # Dedup: if multiple finders match the same span, we classify
+    # the substring once.
+    fragments_by_span: dict[tuple[int, int], tuple[str, str | None]] = {}
+
+    for m in PYTHON_VERSION_NEAR_RE.finditer(text):
+        span = (m.start(), m.end())
+        value = m.group(1) or m.group(2)
+        fragments_by_span.setdefault(span, (m.group(0), value))
+
     for m in VERSIONED_CMD_RE.finditer(text):
-        fragments.append((m.group(0), m.group(1)))
+        span = (m.start(), m.end())
+        fragments_by_span.setdefault(span, (m.group(0), m.group(1)))
+
     for m in PYTHON3_CMD_RE.finditer(text):
         # python3 alone is 7 chars — examples like "python3 --version"
-        # are longer. Including ~10 trailing chars helps the n-gram
-        # overlap distinguish python3_command from versioned_command.
+        # are longer. ~10 trailing chars help n-gram overlap
+        # distinguish python3_command from versioned_command.
         end = min(len(text), m.end() + 10)
-        fragments.append((text[m.start():end], None))
+        span = (m.start(), end)
+        fragments_by_span.setdefault(span, (text[m.start():end], None))
 
     new: list[KEntry] = []
-    for fragment, value in fragments:
+    for (start, end), (fragment, value) in sorted(fragments_by_span.items()):
         cname, score = classify(fragment, WHAT_VERSION_CLASSES)
         if cname is None:
+            _CLASSIFY_MISSES.append({
+                "where": "what_version", "chunk_id": cid,
+                "fragment": fragment, "score": 0.0,
+            })
             continue
         new.append(_kentry_what_version(cid, cname, fragment.strip(), value,
                                          score, state, text))

@@ -189,6 +189,10 @@ This document describes structure and semantics. It does not specify:
   of later evidence — open at implementation time. Back-references
   and active_condition give the structural hooks; the policy that
   uses them is left to the implementation.
+- **Fragment-extraction vs classification.** Fragment-extraction
+  (chunk → candidate substrings) is a separate concern from
+  classification (substring → pattern_class). Both contribute to
+  K-entry creation; their robustness properties are independent.
 
 ---
 

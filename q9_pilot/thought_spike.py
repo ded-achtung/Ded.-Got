@@ -1551,13 +1551,67 @@ CHUNKS = [
 
 # Q1 retrieve order (TF-IDF top-4): pb_intro_004 (0.24), pb_intro_006
 # (0.171), pb_intro_003 (0.148), pb_intro_005 (0.08).
-Q1_CHUNKS = [
+Q1_CHUNKS_ORIGINAL = [
     {
         "id": "pb_intro_004",
         "text": (
             "Инструкция по установке Python. Шаги: 1) зайти на python.org; "
             "2) перейти в раздел Downloads; 3) выбрать установщик для своей "
             "ОС (Windows, macOS или Linux) и версию Python не ниже 3.10; "
+            "4) скачать и следовать инструкциям установщика, согласиться на "
+            "установку pip. Проверка установки: команда python --version, "
+            "либо python3 --version, либо python3.10 --version."
+        ),
+    },
+    {
+        "id": "pb_intro_006",
+        "text": (
+            "В нескольких задачах используются внешние Python-библиотеки, "
+            "устанавливаемые через менеджер пакетов pip. Проверить наличие "
+            "pip: `python -m pip --version` (или python3 -m pip --version, "
+            "в соответствии с тем, как у пользователя называется python). "
+            "Используемые в книге внешние модули устанавливаются командами:"
+            "\n  python -m pip install pygame"
+            "\n  python -m pip install PythonTurtle"
+            "\nСсылка на документацию pip: docs.python.org/3/installing/"
+            "index.html."
+        ),
+    },
+    {
+        "id": "pb_intro_003",
+        "text": (
+            "Структура книги. Книга состоит из двух частей: «Серьезные "
+            "задачи» и «Шуточные задачи». В первой части — 50 (плюс "
+            "несколько дополнительных) задач, расположенных по нарастанию "
+            "сложности. Для решения задач необходимо владеть основами "
+            "Python: переменные, условные предложения, циклы, функции."
+        ),
+    },
+    {
+        "id": "pb_intro_005",
+        "text": (
+            "Рекомендованные редакторы кода для работы с книгой: IDLE "
+            "(входит в комплект поставки Python), Visual Studio Code "
+            "(code.visualstudio.com), PyCharm (jetbrains.com/pycharm). "
+            "Для книги подойдёт любой; для дальнейшего изучения Python "
+            "автор рекомендует более мощные IDE — VS Code или PyCharm."
+        ),
+    },
+]
+
+
+# Q1_CHUNKS — same as Q1_CHUNKS_ORIGINAL except pb_intro_004 has a
+# paraphrase: "версию Python не ниже 3.10" -> "требуется Python от 3.10".
+# This is a brittleness probe — see report_brittleness.py.
+# The paraphrase is semantically equivalent but syntactically outside
+# the patterns the regex finders for version_with_min_phrase target.
+Q1_CHUNKS = [
+    {
+        "id": "pb_intro_004",
+        "text": (
+            "Инструкция по установке Python. Шаги: 1) зайти на python.org; "
+            "2) перейти в раздел Downloads; 3) выбрать установщик для своей "
+            "ОС (Windows, macOS или Linux) и требуется Python от 3.10; "
             "4) скачать и следовать инструкциям установщика, согласиться на "
             "установку pip. Проверка установки: команда python --version, "
             "либо python3 --version, либо python3.10 --version."

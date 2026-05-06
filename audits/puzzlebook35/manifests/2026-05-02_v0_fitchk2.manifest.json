@@ -1,0 +1,62 @@
+{
+  "corpus": {
+    "chunks_path": "audits/puzzlebook35/corpus/puzzlebook_raw_chunks_v1.jsonl",
+    "chunks_sha256": "3066756d507cba56c9cca3b1a54aeafcd5082307305f612e6a6b8655afe8d0c8"
+  },
+  "experiment": {
+    "changed": "fit_check policy (v1 → v2 per-intent floor + ё-norm)",
+    "fixed": "retrieval; chunks; questions; fit_check downstream_k"
+  },
+  "fit_check": {
+    "approach": "v1 hybrid + ALIGN_FLOORS={what:(2,1), why:(4,4), how:(4,4)} + ё→е normalization",
+    "design_doc": "audits/puzzlebook35/baseline_v0/FITCHECK_V2_DESIGN.md",
+    "downstream_effective_k": 4,
+    "intents_handled": [
+      "when",
+      "who",
+      "how_many",
+      "what",
+      "why",
+      "how"
+    ],
+    "version": "v2_per_intent_floor"
+  },
+  "generated_at_utc": "2026-05-02T04:23:27Z",
+  "questions_source": {
+    "count": 35,
+    "path": "audits/puzzlebook35/audit_v0.questions.jsonl",
+    "sha256": "e38ab4ca7ae0ace843ce7491412b0f1976837fa50d6349cae273df0d8b6bdf3c"
+  },
+  "run": {
+    "fit_status_distribution": {
+      "match": 26,
+      "mismatch": 8,
+      "partial": 1,
+      "skipped": 0
+    },
+    "outcomes": {
+      "fit_refuse": 8,
+      "given_up": 0,
+      "hit": 27
+    },
+    "path": "audits/puzzlebook35/runs/2026-05-02_v0_fitchk2.jsonl",
+    "row_count": 35,
+    "sha256": "2aa5e6ed766c9cc0c1d674727c03b321c45981f56faa390c64d8da3b0a1667b5"
+  },
+  "run_date": "2026-05-02",
+  "run_id": "2026-05-02_v0_fitchk2",
+  "simulated": false,
+  "upstream_run": {
+    "label": "v0_baseline",
+    "path": "audits/puzzlebook35/runs/2026-05-02_v0_baseline.jsonl",
+    "sha256": "52cf929db60aeaa8ed52878991193e4e61cd3a95a4ab95e275da7cb8dbcd3a36"
+  },
+  "what_is_real_vs_constructed": {
+    "audit_labels": "n/a",
+    "chunk_content": "REAL (inherited)",
+    "chunk_ids_and_boundaries": "DETERMINISTIC (inherited)",
+    "corpus_pages": "REAL (inherited)",
+    "questions": "INHERITED from puzzlebook35 audit_v0.questions.jsonl",
+    "runtime_metrics_jsonl": "REAL — v0_baseline retrieval × fit_check v2"
+  }
+}

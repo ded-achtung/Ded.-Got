@@ -1,0 +1,35 @@
+{"qid": "Q1", "question": "Какие два специальных метода реализует класс FrenchDeck в главе 1?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2", "pilot_role": "Q-known-hit"}
+{"qid": "Q2", "question": "Какие специальные методы реализованы в классе Vector в первой главе?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q3", "question": "Сколько dunder methods реализует FrenchDeck?", "intent": "how_many", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q4", "question": "Что возвращает __len__ для экземпляра FrenchDeck?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q5", "question": "Почему вызов len(my_object) предпочтительнее my_object.length()?", "intent": "why", "question_type": "conceptual", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q6", "question": "Зачем в Python нужен метод __repr__?", "intent": "why", "question_type": "conceptual", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q7", "question": "Кто автор класса FrenchDeck?", "intent": "who", "question_type": "ambiguous", "active_corpus": "fluent_python_ch1_2", "pilot_role": "ambiguity_test"}
+{"qid": "Q8", "question": "В чём разница между __str__ и __repr__?", "intent": "how", "question_type": "comparative", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q9", "question": "Какой модуль стандартной библиотеки используется для бинарного поиска в отсортированном списке?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q10", "question": "Какие два главных типа последовательностей различаются в главе 2?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q11", "question": "В чём разница между list comprehension и generator expression?", "intent": "how", "question_type": "comparative", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q12", "question": "Почему конструкция list * n проблематична с вложенными mutable объектами?", "intent": "why", "question_type": "conceptual", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q13", "question": "Что возвращает sorted() в отличие от list.sort()?", "intent": "what", "question_type": "comparative", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q14", "question": "Как использовать аргумент key в sorted() для сортировки по длине строки?", "intent": "how", "question_type": "procedural", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q15", "question": "Что такое slice object в Python?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q16", "question": "Какие три параметра принимает срез s[a:b:c]?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q17", "question": "Почему augmented assignment += ведёт себя по-разному для list и tuple?", "intent": "why", "question_type": "reasoning", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q18", "question": "Какой метод модуля bisect используется для вставки с сохранением порядка?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q19", "question": "Какие два специальных метода нужно реализовать, чтобы пользовательский объект поддерживал индексацию и len()?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q20", "question": "Что такое namedtuple и зачем он нужен?", "intent": "what", "question_type": "conceptual", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q21", "question": "Что делает оператор * перед переменной в tuple unpacking?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q22", "question": "Когда Python 2 был объявлен deprecated?", "intent": "when", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2", "pilot_role": "not_in_corpus_test"}
+{"qid": "Q23", "question": "Что хранит атрибут _cards у FrenchDeck?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q24", "question": "Зачем нужен memoryview?", "intent": "why", "question_type": "conceptual", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q25", "question": "В чём разница между container sequences и flat sequences?", "intent": "how", "question_type": "comparative", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q26", "question": "Кто разработал PEP 8?", "intent": "who", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q27", "question": "Почему FrenchDeck нельзя перетасовать через random.shuffle?", "intent": "why", "question_type": "reasoning", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q28", "question": "Какие два встроенных типа являются примерами flat sequences в главе 2?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q29", "question": "Как создать namedtuple для записи координат с полями x и y?", "intent": "how", "question_type": "procedural", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q30", "question": "Какой класс из collections реализует двустороннюю очередь?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q31", "question": "Когда был выпущен Python 3.7?", "intent": "when", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q32", "question": "Почему tuple часто называют immutable list, и почему это упрощённое описание?", "intent": "why", "question_type": "conceptual", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q33", "question": "Что является результатом выражения [n*2 for n in range(5)]?", "intent": "what", "question_type": "factoid", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q34", "question": "Почему в Python 3 listcomp не «протекает» переменными в окружающую область видимости?", "intent": "why", "question_type": "reasoning", "active_corpus": "fluent_python_ch1_2"}
+{"qid": "Q35", "question": "Что лучше использовать для последовательностей: list или tuple?", "intent": "what", "question_type": "ambiguous", "active_corpus": "fluent_python_ch1_2"}

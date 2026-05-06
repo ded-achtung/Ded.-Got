@@ -1,0 +1,83 @@
+{
+  "corpus": {
+    "chunk_count": 30,
+    "chunks_path": "audits/puzzlebook35/corpus/puzzlebook_raw_chunks_v1.jsonl",
+    "chunks_sha256": "3066756d507cba56c9cca3b1a54aeafcd5082307305f612e6a6b8655afe8d0c8",
+    "name": "puzzlebook_raw_intro_t1_15",
+    "shared_with": [
+      "baseline_v0"
+    ],
+    "source_tag": "whiteside_puzzlebook_2025_ru"
+  },
+  "experiment": {
+    "compared_against": "baseline_v0 (TF-IDF cosine)",
+    "controlled_change": "retrieval scoring formula only",
+    "everything_else_held_constant": [
+      "chunks (same JSONL file, same SHA-256)",
+      "questions (same JSONL file, same SHA-256)",
+      "tokenizer (lowercase + \\b\\w\\w+\\b)",
+      "fit_check policy and regex rules",
+      "top_k=10, downstream_effective_k=4"
+    ]
+  },
+  "fit_check": {
+    "intent_rules": {
+      "how_many": "regex \\b\\d+\\b",
+      "other": "skipped",
+      "when": "regex (19|20)\\d{2} over downstream-effective-k chunks",
+      "who": "regex capitalized name pattern"
+    },
+    "version": "v0_minimal (inherited from baseline_v0)"
+  },
+  "generated_at_utc": "2026-05-02T01:43:01Z",
+  "pdf_source": {
+    "page_range": [
+      12,
+      38
+    ],
+    "path": "Python в задачах и упражнениях.pdf",
+    "sha256": "1ae6fea45cb708dd38af3f62a65a367df68d878e8d3c432d7d7a54e732ca2d4f"
+  },
+  "questions_source": {
+    "count": 35,
+    "path": "audits/puzzlebook35/audit_v0.questions.jsonl",
+    "sha256": "e38ab4ca7ae0ace843ce7491412b0f1976837fa50d6349cae273df0d8b6bdf3c"
+  },
+  "retrieval": {
+    "b": "default (0.75)",
+    "downstream_effective_k": 4,
+    "k1": "default (1.5)",
+    "library": "rank-bm25==0.2.2",
+    "method": "bm25_okapi",
+    "random_state": "n/a (no random component)",
+    "tokenizer": "lowercase + \\b\\w\\w+\\b (identical to baseline_v0 TF-IDF)",
+    "top_k": 10
+  },
+  "run": {
+    "fit_status_distribution": {
+      "match": 3,
+      "mismatch": 1,
+      "partial": 0,
+      "skipped": 31
+    },
+    "outcomes": {
+      "fit_refuse": 1,
+      "given_up": 0,
+      "hit": 34
+    },
+    "path": "audits/puzzlebook35/runs/2026-05-02_v1_bm25.jsonl",
+    "row_count": 35,
+    "sha256": "586194e5a9aa2ed60975b53062fc2bafb71f9e3e5945311db720585d9698c5fd"
+  },
+  "run_date": "2026-05-02",
+  "run_id": "2026-05-02_v1_bm25",
+  "simulated": false,
+  "what_is_real_vs_constructed": {
+    "audit_labels": "n/a — this task does not produce audit rows",
+    "chunk_content": "REAL — direct PDF extraction (inherited from baseline_v0)",
+    "chunk_ids_and_boundaries": "DETERMINISTIC — section-header rules (inherited)",
+    "corpus_pages": "REAL",
+    "questions": "INHERITED from puzzlebook35 audit_v0.questions.jsonl",
+    "runtime_metrics_jsonl": "REAL — BM25 baseline run output"
+  }
+}

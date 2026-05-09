@@ -8,7 +8,7 @@
 //! Catches: hotplug bug where backend receives events before resource init.
 
 use crate::traced_backend::TracedBackend;
-use wpe_backend::frame::FrameRequest;
+use wpe_backend::frame::{FrameOutput, FrameRequest};
 use wpe_backend::lifecycle::FrameSource;
 use wpe_backend::state::{FractionalScale, RuntimeInstant, SurfaceSize};
 
@@ -101,4 +101,80 @@ fn double_prepare_panics() {
         backend.prepare(ctx2);
     }));
     assert!(result.is_err(), "double prepare must panic");
+}
+
+#[test]
+fn rapid_resize_applies_latest_size_on_next_frame() {
+    let mut backend = TracedBackend::new();
+    let ctx = TracedBackend::mock_prepare_ctx();
+    let _ = backend.prepare(ctx);
+
+    // Simulate hotplug/reconfigure burst: multiple resize events
+    // before next compositor frame callback.
+    let sizes = [
+        SurfaceSize {
+            width: 1280,
+            height: 720,
+        },
+        SurfaceSize {
+            width: 3440,
+            height: 1440,
+        },
+        SurfaceSize {
+            width: 2560,
+            height: 1600,
+        },
+    ];
+
+    for size in sizes {
+        let resized = backend.resize(size, FractionalScale(1.25));
+        assert!(resized.is_ok(), "resize in burst must succeed");
+    }
+
+    let req = FrameRequest {
+        target_size: SurfaceSize {
+            width: 2560,
+            height: 1600,
+        },
+        is_first_frame: true,
+        clock: RuntimeInstant::zero(),
+        frame_index: 0,
+    };
+    let frame = backend.render_frame(&req).expect("render after resize burst");
+
+    match frame {
+        FrameOutput::Cpu { buffer, .. } => {
+            assert_eq!(buffer.width, 2560);
+            assert_eq!(buffer.height, 1600);
+        }
+        other => panic!("expected CPU frame after first render, got {other:?}"),
+    }
+}
+
+#[test]
+fn pause_blocks_render_until_resume() {
+    let mut backend = TracedBackend::new();
+    let ctx = TracedBackend::mock_prepare_ctx();
+    let _ = backend.prepare(ctx);
+    backend.pause();
+
+    let req = FrameRequest {
+        target_size: SurfaceSize {
+            width: 1920,
+            height: 1080,
+        },
+        is_first_frame: true,
+        clock: RuntimeInstant::zero(),
+        frame_index: 0,
+    };
+
+    let paused = backend.render_frame(&req);
+    assert!(
+        paused.is_err(),
+        "render_frame while paused must fail to prevent hidden work"
+    );
+
+    backend.resume();
+    let resumed = backend.render_frame(&req);
+    assert!(resumed.is_ok(), "render_frame after resume must succeed");
 }

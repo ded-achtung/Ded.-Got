@@ -51,6 +51,11 @@ fn device_lost_is_fatal() {
 
     // DeviceLost means OutputRuntime must recreate entirely.
     // Renderer should not attempt recovery itself.
+    let again = renderer.present(test_frame());
+    assert!(
+        matches!(again, Err(PresentError::DeviceLost)),
+        "renderer instance must remain fatal after device loss"
+    );
 }
 
 #[test]
@@ -74,6 +79,51 @@ fn transient_error_skips_frame() {
     let r = renderer.present(test_frame());
     assert!(matches!(r, Ok(PresentOutcome::Presented)));
     assert_eq!(renderer.present_count, 2);
+}
+
+#[test]
+fn transient_burst_does_not_poison_renderer() {
+    let mut renderer = MockRenderer::new();
+
+    for _ in 0..3 {
+        renderer.next_present_error = Some(PresentError::Transient);
+        let err = renderer.present(test_frame());
+        assert!(matches!(err, Err(PresentError::Transient)));
+        assert_eq!(
+            renderer.status(),
+            RendererStatus::Ready,
+            "transient errors must not change renderer health"
+        );
+    }
+
+    // Recovery path after transient burst.
+    let ok = renderer.present(test_frame());
+    assert!(matches!(ok, Ok(PresentOutcome::Presented)));
+    assert_eq!(renderer.present_count, 1);
+}
+
+#[test]
+fn repeated_surface_lost_requires_explicit_recreate() {
+    let mut renderer = MockRenderer::new();
+
+    renderer.next_present_error = Some(PresentError::SurfaceLost);
+    let first = renderer.present(test_frame());
+    assert!(matches!(first, Err(PresentError::SurfaceLost)));
+    assert_eq!(renderer.status(), RendererStatus::SurfaceLost);
+
+    renderer.recreate_surface();
+    assert_eq!(renderer.surface_recreate_count, 1);
+    assert_eq!(renderer.status(), RendererStatus::Ready);
+
+    renderer.next_present_error = Some(PresentError::SurfaceLost);
+    let second = renderer.present(test_frame());
+    assert!(matches!(second, Err(PresentError::SurfaceLost)));
+    assert_eq!(renderer.status(), RendererStatus::SurfaceLost);
+
+    renderer.recreate_surface();
+    assert_eq!(renderer.surface_recreate_count, 2);
+    let ok = renderer.present(test_frame());
+    assert!(matches!(ok, Ok(PresentOutcome::Presented)));
 }
 
 #[test]

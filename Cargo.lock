@@ -10,6 +10,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wpe-cli"
+version = "0.1.0"
+dependencies = [
+ "wpe-compat",
+]
+
+[[package]]
 name = "wpe-compat"
 version = "0.1.0"
 

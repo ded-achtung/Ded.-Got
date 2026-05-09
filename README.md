@@ -26,7 +26,7 @@
 
 4. **[RUNTIME.md](./RUNTIME.md)** — контракты рантайма. ⚠️ Секции §2, §3, §9 помечены `PROTOTYPE-PENDING`, читать с оглядкой на SELF-AUDIT.
 
-5. **[SKELETON.md](./SKELETON.md)** — план первого скелета. 4 crate'а, 5 contract-тестов, TDD-порядок, `wpe diag` как первый milestone.
+5. **[SKELETON.md](./SKELETON.md)** — план первого скелета. 5 crate'ов (включая `wpe-cli` skeleton), 5 contract-тестов, TDD-порядок, `wpe diag` как первый milestone.
 
 ### 🔍 Аудиты — перед тем как начинать код
 

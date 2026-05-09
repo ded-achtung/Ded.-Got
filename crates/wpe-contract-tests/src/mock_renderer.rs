@@ -49,6 +49,13 @@ impl Renderer for MockRenderer {
     }
 
     fn present(&mut self, frame: FrameOutput) -> Result<PresentOutcome, PresentError> {
+        // Device lost is fatal for this renderer instance.
+        // OutputRuntime must recreate renderer; current instance should
+        // keep returning DeviceLost to avoid accidental "self-heal".
+        if self.status == RendererStatus::DeviceLost {
+            return Err(PresentError::DeviceLost);
+        }
+
         if let Some(err) = self.next_present_error.take() {
             match &err {
                 PresentError::SurfaceLost => {

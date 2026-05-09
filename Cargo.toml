@@ -5,6 +5,7 @@ members = [
     "crates/wpe-backend",
     "crates/wpe-render-core",
     "crates/wpe-contract-tests",
+    "crates/wpe-cli",
 ]
 
 # Prototype is excluded from the workspace — it has external deps
